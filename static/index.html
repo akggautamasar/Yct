@@ -127,13 +127,22 @@ async function loadBooks() {
            data-cover="${encodeURIComponent(b.cover||'')}">
         <div><div>${b.name}</div><small>ID ${b.book_id}</small></div>
       </div>`).join('');
-    document.querySelectorAll('.item').forEach(el => el.onclick = () => {
+    document.querySelectorAll('.item').forEach(el => el.onclick = async () => {
       document.querySelectorAll('.item').forEach(x => x.classList.remove('sel'));
       el.classList.add('sel');
       selected = { book_id:+el.dataset.id,
                    title:decodeURIComponent(el.dataset.name),
                    cover:decodeURIComponent(el.dataset.cover) };
-      $('#picked').textContent = `Selected: ${selected.title} (ID ${selected.book_id})`;
+      $('#picked').textContent = `Selected: ${selected.title} (ID ${selected.book_id}) — checking pages…`;
+      try {
+        const p = await j('/api/pages?book_id=' + selected.book_id);
+        selected.total = p.total_pages;
+        const t = p.total_pages || 'unknown';
+        $('#picked').textContent = `Selected: ${selected.title} — ${t} pages`;
+        if (p.total_pages) $('#end').placeholder = 'all (' + p.total_pages + ')';
+      } catch {
+        $('#picked').textContent = `Selected: ${selected.title} (ID ${selected.book_id})`;
+      }
     });
   } catch (e) {
     $('#books').innerHTML = `<span class="muted">error: ${e.message}</span>`;
@@ -147,6 +156,7 @@ async function go() {
     start: +$('#start').value || 1,
     end: $('#end').value ? +$('#end').value : null,
     do_ocr: $('#ocr').checked,
+    total_pages: selected.total || null,
   };
   try {
     const res = await j('/api/download', {
