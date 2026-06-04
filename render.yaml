@@ -3,13 +3,12 @@ services:
     name: yct-downloader
     runtime: python
     plan: free
-    # Install tesseract + Hindi/English language packs, then Python deps.
-    buildCommand: |
-      apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng || true
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
       - key: YCT_EMAIL
         sync: false
       - key: YCT_PASSWORD
