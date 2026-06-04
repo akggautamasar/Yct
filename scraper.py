@@ -127,19 +127,19 @@ async def get_total_pages(book_id: int) -> int | None:
                     return val
     except Exception:
         pass
-    # binary search fallback
+    # binary search fallback — use _page_exists (handles base64 text pages)
     try:
+        if not await _page_exists(book_id, 1):
+            return None
         lo, hi = 1, 100
         while hi < 5000:
-            r = await c.get(f"{config.BASE_URL}/getPage/{book_id}/{hi}")
-            if _is_img(r.content):
+            if await _page_exists(book_id, hi):
                 lo = hi; hi *= 2
             else:
                 break
         while lo + 1 < hi:
             mid = (lo + hi) // 2
-            r = await c.get(f"{config.BASE_URL}/getPage/{book_id}/{mid}")
-            if _is_img(r.content):
+            if await _page_exists(book_id, mid):
                 lo = mid
             else:
                 hi = mid
@@ -149,12 +149,26 @@ async def get_total_pages(book_id: int) -> int | None:
         return None
 
 
-async def has_access(book_id: int) -> bool:
+async def _page_exists(book_id: int, page: int) -> bool:
+    """True if the page endpoint returns a real image (raw OR base64 text)."""
     c = await get_client()
-    r = await c.get(f"{config.BASE_URL}/getPage/{book_id}/1",
-                    headers={**config.HEADERS,
-                             "Referer": f"{config.BASE_URL}/readbook/{book_id}/1"})
-    return _is_img(r.content)
+    try:
+        r = await c.get(f"{config.BASE_URL}/getPage/{book_id}/{page}",
+                        headers={**config.HEADERS,
+                                 "Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"})
+        if r.status_code != 200:
+            return False
+        if _is_img(r.content):
+            return True
+        # base64 / data-uri responses come back as text
+        txt = r.text.strip() if r.content[:1] not in (b"\x89", b"\xff") else ""
+        return _decode_page(r.content, txt) is not None
+    except Exception:
+        return False
+
+
+async def has_access(book_id: int) -> bool:
+    return await _page_exists(book_id, 1)
 
 
 def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
