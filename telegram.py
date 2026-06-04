@@ -11,20 +11,57 @@ import config
 _API = f"https://api.telegram.org/bot{config.TG_TOKEN}"
 
 
-async def send_message(text: str, chat_id: str | None = None) -> bool:
+async def send_message(text: str, chat_id: str | None = None,
+                       buttons: list | None = None) -> dict | None:
+    """Send a message, optionally with an inline keyboard.
+    buttons = list of rows; each row a list of (label, callback_data) tuples.
+    Returns the Telegram message object on success."""
     chat = chat_id or config.TG_CHAT_ID
+    data = {"chat_id": chat, "text": text, "parse_mode": "HTML"}
+    if buttons:
+        data["reply_markup"] = _kb(buttons)
     async with httpx.AsyncClient(timeout=30) as c:
         for _ in range(3):
             try:
-                r = await c.post(f"{_API}/sendMessage",
-                                 data={"chat_id": chat, "text": text,
-                                       "parse_mode": "HTML"})
+                r = await c.post(f"{_API}/sendMessage", json=data)
                 if r.status_code == 200:
-                    return True
+                    return r.json().get("result")
             except Exception:
                 pass
             await asyncio.sleep(2)
-    return False
+    return None
+
+
+def _kb(buttons: list) -> dict:
+    """Build an inline_keyboard markup from rows of (label, callback_data)."""
+    rows = []
+    for row in buttons:
+        rows.append([{"text": label, "callback_data": data} for label, data in row])
+    return {"inline_keyboard": rows}
+
+
+async def edit_message(chat_id, message_id, text: str,
+                       buttons: list | None = None) -> bool:
+    data = {"chat_id": chat_id, "message_id": message_id,
+            "text": text, "parse_mode": "HTML"}
+    if buttons is not None:
+        data["reply_markup"] = _kb(buttons)
+    async with httpx.AsyncClient(timeout=30) as c:
+        try:
+            r = await c.post(f"{_API}/editMessageText", json=data)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+
+async def answer_callback(callback_id: str, text: str = "") -> bool:
+    async with httpx.AsyncClient(timeout=15) as c:
+        try:
+            r = await c.post(f"{_API}/answerCallbackQuery",
+                             json={"callback_query_id": callback_id, "text": text})
+            return r.status_code == 200
+        except Exception:
+            return False
 
 
 async def send_document(path: str, caption: str = "",
