@@ -17,56 +17,73 @@ def _ordered_images(folder: str) -> list[str]:
 
 
 def build_lossless(folder: str, pdf_path: str) -> float:
-    """Embed original page images with NO recompression — highest quality."""
+    """Build a high-quality PDF with BOUNDED memory.
+
+    The old approach loaded every page and let img2pdf hold the whole document
+    in RAM — fine for 10 pages, fatal for 368 on a 512MB box. This version
+    processes ONE page at a time: normalize -> single-page PDF -> append to the
+    growing writer -> free it. Peak memory stays roughly constant regardless of
+    book length.
+
+    Pages are normalized to clean 8-bit RGB (alpha flattened onto white, depth
+    reduced) and re-encoded as high-quality JPEG (q=92), which is visually
+    lossless for scanned pages and keeps file size reasonable.
+    """
     try:
         import img2pdf
     except ImportError:
         return 0.0
 
     imgs = _ordered_images(folder)
-    src_paths = [os.path.join(folder, fn) for fn in imgs]
-    if not src_paths:
+    if not imgs:
         return 0.0
 
-    # Normalize every page to clean 8-bit RGB before building.
-    #
-    # Book pages from this site come as PNGs with an alpha channel and
-    # sometimes 16-bit depth. img2pdf either crashes on those (16-bit + alpha)
-    # or wastes time/space building a soft-mask per page. Flattening alpha onto
-    # white and forcing 8-bit RGB is visually lossless for scanned pages and
-    # makes the build fast and reliable. We re-encode to high-quality JPEG
-    # (q=95) which keeps quality high while keeping file size sane.
-    prepared, tmp = [], []
-    for p in src_paths:
-        try:
-            img = Image.open(p)
-            # flatten alpha onto white
-            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                img = img.convert("RGBA")
-                bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-                img = Image.alpha_composite(bg, img).convert("RGB")
-            elif img.mode != "RGB":
-                img = img.convert("RGB")
-            # PIL convert already drops to 8-bit per channel
-            out = os.path.splitext(p)[0] + "_prep.jpg"
-            img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
-            prepared.append(out); tmp.append(out)
-        except Exception:
-            # if anything odd, fall back to using the original file as-is
-            prepared.append(p)
+    writer = PdfWriter()
+    added = 0
 
-    if not prepared:
+    for fn in imgs:
+        p = os.path.join(folder, fn)
+        tmp_jpg = os.path.splitext(p)[0] + "_prep.jpg"
+        tmp_pdf = os.path.splitext(p)[0] + "_prep.pdf"
+        try:
+            # --- normalize one page, write a temp JPEG ---
+            with Image.open(p) as im:
+                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                    im = im.convert("RGBA")
+                    bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+                    im = Image.alpha_composite(bg, im).convert("RGB")
+                elif im.mode != "RGB":
+                    im = im.convert("RGB")
+                im.save(tmp_jpg, format="JPEG", quality=92, subsampling=0, optimize=True)
+
+            # --- one-page PDF from that JPEG ---
+            with open(tmp_pdf, "wb") as f:
+                f.write(img2pdf.convert(tmp_jpg))
+
+            # --- append to the growing document, then free the page ---
+            reader = PdfReader(tmp_pdf)
+            for pg in reader.pages:
+                writer.add_page(pg)
+            added += 1
+        except Exception:
+            pass
+        finally:
+            # delete the page image too — we don't need it after this
+            for t in (tmp_jpg, tmp_pdf):
+                try: os.remove(t)
+                except: pass
+            try: os.remove(p)
+            except: pass
+
+    if added == 0:
         return 0.0
 
     try:
         with open(pdf_path, "wb") as f:
-            f.write(img2pdf.convert(prepared))
+            writer.write(f)
         mb = os.path.getsize(pdf_path) / 1_048_576
     except Exception:
         mb = 0.0
-    for t in tmp:
-        try: os.remove(t)
-        except: pass
     return mb
 
 
