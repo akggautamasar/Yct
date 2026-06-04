@@ -62,17 +62,27 @@ async def _process(jid: str):
         if not await scraper.login():
             raise RuntimeError("login failed")
 
-        # resolve total pages if unknown
-        total_pages = job["total_pages"]
-        if not total_pages:
-            job["status"] = "detecting_pages"
-            total_pages = await scraper.get_total_pages(book_id)
-            if not total_pages:
-                raise RuntimeError("could not detect total pages")
-            job["total_pages"] = total_pages
-
         start = max(job["start"], 1)
-        end = min(job["end"] or total_pages, total_pages)
+        explicit_end = job["end"]
+        total_pages = job["total_pages"]
+
+        if explicit_end:
+            # User gave an explicit end page — trust it. The downloader skips
+            # any pages that don't exist, so over-asking is harmless.
+            end = explicit_end
+            if not total_pages or total_pages < end:
+                total_pages = end
+            job["total_pages"] = total_pages
+        else:
+            # No end given — detect the full length.
+            if not total_pages:
+                job["status"] = "detecting_pages"
+                total_pages = await scraper.get_total_pages(book_id)
+                if not total_pages:
+                    raise RuntimeError("could not detect total pages")
+                job["total_pages"] = total_pages
+            end = total_pages
+
         pages = list(range(start, end + 1))
         job["total"] = len(pages)
 
