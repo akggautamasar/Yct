@@ -5,6 +5,7 @@ Jobs live in memory; lost on restart (acceptable for a download tool).
 Finished PDFs are pushed to the Telegram storage channel, then /tmp is cleaned.
 """
 import os
+import re
 import uuid
 import shutil
 import asyncio
@@ -14,6 +15,18 @@ import config
 import scraper
 import pdfbuilder
 import telegram as tg
+
+
+def _safe_filename(name: str, fallback: str) -> str:
+    """Make a filesystem- and Telegram-safe filename from a book title."""
+    name = (name or "").strip()
+    if not name:
+        return fallback
+    # strip characters illegal on common filesystems
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = name[:80].strip()  # keep it reasonable
+    return name or fallback
 
 # job_id -> dict(status, title, book_id, pages, done, total, ok, failed, ts, error, pdf_links)
 JOBS: dict[str, dict] = {}
@@ -30,14 +43,14 @@ def _q() -> asyncio.Queue:
 
 def new_job(book_id: int, title: str, cover: str, start: int, end: int,
             do_ocr: bool, total_pages: int | None,
-            notify_chat: str | None = None) -> str:
+            notify_chat: str | None = None, detail_id: int | None = None) -> str:
     jid = uuid.uuid4().hex[:10]
     JOBS[jid] = {
         "id": jid, "status": "queued", "book_id": book_id, "title": title,
         "cover": cover, "start": start, "end": end, "do_ocr": do_ocr,
         "total_pages": total_pages, "done": 0, "total": 0, "ok": 0,
         "failed": 0, "error": None, "ts": int(time.time()),
-        "notify_chat": notify_chat, "pdf_parts": 0,
+        "notify_chat": notify_chat, "pdf_parts": 0, "detail_id": detail_id,
     }
     _q().put_nowait(jid)
     return jid
@@ -61,6 +74,17 @@ async def _process(jid: str):
         job["status"] = "logging_in"
         if not await scraper.login():
             raise RuntimeError("login failed")
+
+        # If the title is generic (e.g. "Book 1234"), try to resolve the real
+        # name from the book's detail page when we have a detail_id.
+        if (not title or title.startswith("Book ")) and job.get("detail_id"):
+            try:
+                real_name, _ = await scraper.get_book_details(job["detail_id"])
+                if real_name and not real_name.startswith("Book "):
+                    title = real_name
+                    job["title"] = real_name
+            except Exception:
+                pass
 
         start = max(job["start"], 1)
         explicit_end = job["end"]
@@ -113,7 +137,12 @@ async def _process(jid: str):
         job["failed"] = len(failed)
 
         job["status"] = "building_pdf"
-        pdf_path = os.path.join(config.WORK_DIR, f"yct_{book_id}_p{start}-{end}.pdf")
+        safe = _safe_filename(title, f"yct_{book_id}")
+        if start == 1 and end >= total_pages:
+            display_name = f"{safe}.pdf"
+        else:
+            display_name = f"{safe} (p{start}-{end}).pdf"
+        pdf_path = os.path.join(config.WORK_DIR, display_name)
         mb, ocr_used = pdfbuilder.build(folder, pdf_path, job["do_ocr"])
         if mb <= 0:
             raise RuntimeError("PDF build produced no output")
