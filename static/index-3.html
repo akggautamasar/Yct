@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>YCT Downloader</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --line:#2a2e3c; --txt:#e6e8ee;
+          --mut:#8a90a2; --acc:#7c5cff; --ok:#3ecf8e; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:18px 20px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; font-weight:650; }
+  .wrap { max-width:980px; margin:0 auto; padding:20px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .col { flex:1; min-width:280px; }
+  .card { background:var(--card); border:1px solid var(--line);
+          border-radius:12px; padding:16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em;
+       color:var(--mut); margin:0 0 12px; }
+  select, input, button { font:inherit; color:var(--txt);
+          background:#11141c; border:1px solid var(--line);
+          border-radius:8px; padding:9px 11px; }
+  select, input { width:100%; }
+  button { background:var(--acc); border:none; cursor:pointer;
+           font-weight:600; padding:9px 16px; }
+  button:hover { filter:brightness(1.08); }
+  button.ghost { background:transparent; border:1px solid var(--line); }
+  .list { max-height:340px; overflow:auto; margin-top:10px; }
+  .item { padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+          margin-bottom:7px; cursor:pointer; display:flex; gap:10px;
+          align-items:center; }
+  .item:hover { border-color:var(--acc); }
+  .item.sel { border-color:var(--acc); background:#1e1830; }
+  .item small { color:var(--mut); }
+  .opts { display:flex; gap:10px; align-items:center; margin-top:12px;
+          flex-wrap:wrap; }
+  .opts label { color:var(--mut); font-size:13px; }
+  .opts input[type=number] { width:90px; }
+  .chk { display:flex; gap:6px; align-items:center; }
+  .jobs { margin-top:18px; }
+  .job { display:flex; justify-content:space-between; gap:10px;
+         padding:10px 12px; border:1px solid var(--line);
+         border-radius:8px; margin-bottom:8px; align-items:center; }
+  .bar { height:6px; background:#11141c; border-radius:4px; overflow:hidden;
+         flex:1; margin:0 12px; }
+  .bar > i { display:block; height:100%; background:var(--acc); width:0; }
+  .st { font-size:12px; color:var(--mut); white-space:nowrap; }
+  .st.done { color:var(--ok); } .st.error { color:var(--err); }
+  .muted { color:var(--mut); font-size:13px; }
+  .spin { opacity:.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📚 YCT Downloader</h1>
+  <span class="muted" id="health"></span>
+</header>
+
+<div class="wrap">
+  <div class="row">
+    <div class="col card">
+      <h2>1 · Category</h2>
+      <select id="cat"><option>Loading…</option></select>
+      <button class="ghost" id="loadBooks" style="margin-top:10px">Load books</button>
+    </div>
+    <div class="col card">
+      <h2>2 · Book</h2>
+      <div class="list" id="books"><span class="muted">Pick a category first.</span></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>3 · Options</h2>
+    <div class="opts">
+      <label>Start <input type="number" id="start" value="1" min="1"></label>
+      <label>End <input type="number" id="end" placeholder="all"></label>
+      <span class="chk"><input type="checkbox" id="ocr"><label for="ocr">OCR (searchable; falls back to max quality)</label></span>
+      <button id="go">Download → Telegram</button>
+    </div>
+    <div class="muted" id="picked" style="margin-top:10px">No book selected.</div>
+  </div>
+
+  <div class="jobs">
+    <h2>Jobs</h2>
+    <div id="jobs"><span class="muted">No jobs yet.</span></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let selected = null;
+
+async function j(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
+  return r.json();
+}
+
+async function health() {
+  try {
+    const h = await j('/healthz');
+    $('#health').textContent = h.ok ? 'configured ✓'
+      : 'missing env: ' + h.missing_env.join(', ');
+  } catch {}
+}
+
+async function loadCats() {
+  try {
+    const cats = await j('/api/categories');
+    $('#cat').innerHTML = cats.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  } catch (e) {
+    $('#cat').innerHTML = `<option>error: ${e.message}</option>`;
+  }
+}
+
+async function loadBooks() {
+  const cat = $('#cat').value;
+  $('#books').innerHTML = '<span class="muted spin">Loading books…</span>';
+  try {
+    const books = await j('/api/books?cat=' + cat);
+    if (!books.length) { $('#books').innerHTML = '<span class="muted">No books.</span>'; return; }
+    $('#books').innerHTML = books.map(b => `
+      <div class="item" data-id="${b.book_id}" data-name="${encodeURIComponent(b.name)}"
+           data-cover="${encodeURIComponent(b.cover||'')}">
+        <div><div>${b.name}</div><small>ID ${b.book_id}</small></div>
+      </div>`).join('');
+    document.querySelectorAll('.item').forEach(el => el.onclick = () => {
+      document.querySelectorAll('.item').forEach(x => x.classList.remove('sel'));
+      el.classList.add('sel');
+      selected = { book_id:+el.dataset.id,
+                   title:decodeURIComponent(el.dataset.name),
+                   cover:decodeURIComponent(el.dataset.cover) };
+      $('#picked').textContent = `Selected: ${selected.title} (ID ${selected.book_id})`;
+    });
+  } catch (e) {
+    $('#books').innerHTML = `<span class="muted">error: ${e.message}</span>`;
+  }
+}
+
+async function go() {
+  if (!selected) { alert('Pick a book first.'); return; }
+  const body = {
+    book_id: selected.book_id, title: selected.title, cover: selected.cover,
+    start: +$('#start').value || 1,
+    end: $('#end').value ? +$('#end').value : null,
+    do_ocr: $('#ocr').checked,
+  };
+  try {
+    const res = await j('/api/download', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body) });
+    pollJobs();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+function jobRow(jb) {
+  const pct = jb.total ? Math.round(jb.done*100/jb.total) : 0;
+  const cls = jb.status==='done' ? 'done' : (jb.status==='error' ? 'error' : '');
+  const label = jb.status==='error' ? ('error: '+(jb.error||'')) : jb.status;
+  return `<div class="job">
+    <div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${jb.title}</div>
+      <small class="muted">ID ${jb.book_id}</small></div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="st ${cls}">${label} · ${jb.done}/${jb.total||'?'}</div>
+  </div>`;
+}
+
+async function pollJobs() {
+  try {
+    const js = await j('/api/jobs');
+    $('#jobs').innerHTML = js.length ? js.map(jobRow).join('')
+      : '<span class="muted">No jobs yet.</span>';
+  } catch {}
+}
+
+$('#loadBooks').onclick = loadBooks;
+$('#go').onclick = go;
+health(); loadCats(); pollJobs();
+setInterval(pollJobs, 3000);
+</script>
+</body>
+</html>
