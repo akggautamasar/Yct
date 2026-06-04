@@ -113,64 +113,85 @@ async def _process(jid: str):
         if not await scraper.has_access(book_id):
             raise RuntimeError("no access to this book (check account)")
 
+        # Split the requested range into batches. Each batch is downloaded,
+        # built into its own PDF, uploaded, and fully freed before the next —
+        # so peak memory is bounded by one batch, not the whole book. This is
+        # what lets 368-page books work on a 512MB instance.
+        chunk = max(1, config.CHUNK_PAGES)
+        batches = [pages[i:i + chunk] for i in range(0, len(pages), chunk)]
+        multi = len(batches) > 1
+
         if chat:
+            extra = (f"\nProcessing in {len(batches)} parts of up to {chunk} pages."
+                     if multi else "")
             await tg.send_message(
-                f"<b>Download started</b>\n{title}\nPages {start}-{end} of {total_pages}",
+                f"<b>Download started</b>\n{title}\nPages {start}-{end} of {total_pages}{extra}",
                 chat)
 
-        folder = os.path.join(config.WORK_DIR, f"book_{book_id}_p{start}_{end}")
-        os.makedirs(folder, exist_ok=True)
-
-        job["status"] = "downloading"
-
-        def on_progress(done, total, ok, skip, failed):
-            job["done"] = done
-            job["ok"] = ok
-            job["failed"] = failed
-
-        ok, skip, failed = await scraper.download_pages(book_id, pages, folder, on_progress)
-
-        # one retry pass for failures
-        if failed:
-            job["status"] = "retrying"
-            ok2, skip2, failed = await scraper.download_pages(book_id, failed, folder)
-        job["failed"] = len(failed)
-
-        job["status"] = "building_pdf"
         safe = _safe_filename(title, f"yct_{book_id}")
-        if start == 1 and end >= total_pages:
-            display_name = f"{safe}.pdf"
-        else:
-            display_name = f"{safe} (p{start}-{end}).pdf"
-        pdf_path = os.path.join(config.WORK_DIR, display_name)
-        mb, ocr_used = pdfbuilder.build(folder, pdf_path, job["do_ocr"])
-        if mb <= 0:
-            raise RuntimeError("PDF build produced no output")
+        quality = "max-quality lossless"
+        total_done = 0
+        total_failed = 0
 
-        job["status"] = "uploading"
-        parts = pdfbuilder.split_for_telegram(pdf_path)
-        job["pdf_parts"] = len(parts)
-        quality = "searchable OCR" if ocr_used else "max-quality lossless"
-        for i, part in enumerate(parts, 1):
-            cap = f"<b>{title}</b> | pages {start}-{end} | {quality}"
-            if len(parts) > 1:
-                cap += f" [part {i}/{len(parts)}]"
-            await tg.send_document(part, cap, chat)
+        for bi, batch in enumerate(batches, 1):
+            b_start, b_end = batch[0], batch[-1]
+            folder = os.path.join(config.WORK_DIR, f"book_{book_id}_p{b_start}_{b_end}")
+            os.makedirs(folder, exist_ok=True)
 
-        # cleanup ephemeral files
-        shutil.rmtree(folder, ignore_errors=True)
-        for p in parts:
-            try: os.remove(p)
-            except: pass
-        try:
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-        except: pass
+            job["status"] = f"downloading part {bi}/{len(batches)}" if multi else "downloading"
 
+            def on_progress(done, total, ok, skip, failed, _base=total_done):
+                job["done"] = _base + done
+                job["ok"] = _base + ok
+                job["failed"] = total_failed + failed
+
+            ok, skip, failed = await scraper.download_pages(book_id, batch, folder, on_progress)
+            if failed:
+                _, _, failed = await scraper.download_pages(book_id, failed, folder)
+            total_failed += len(failed)
+            total_done += len(batch) - len(failed)
+            job["done"] = total_done
+            job["failed"] = total_failed
+
+            job["status"] = f"building part {bi}/{len(batches)}" if multi else "building_pdf"
+            if not multi and start == 1 and end >= total_pages:
+                display_name = f"{safe}.pdf"
+            elif multi:
+                display_name = f"{safe} (part {bi} of {len(batches)}, p{b_start}-{b_end}).pdf"
+            else:
+                display_name = f"{safe} (p{b_start}-{b_end}).pdf"
+            pdf_path = os.path.join(config.WORK_DIR, display_name)
+
+            mb, ocr_used = pdfbuilder.build(folder, pdf_path, job["do_ocr"])
+            if ocr_used:
+                quality = "searchable OCR"
+
+            if mb > 0 and os.path.exists(pdf_path):
+                job["status"] = f"uploading part {bi}/{len(batches)}" if multi else "uploading"
+                # a single batch might still exceed Telegram's size cap -> split
+                tg_parts = pdfbuilder.split_for_telegram(pdf_path)
+                for pj, part in enumerate(tg_parts, 1):
+                    cap = f"<b>{title}</b> | pages {b_start}-{b_end} | {quality}"
+                    if multi:
+                        cap += f" | part {bi}/{len(batches)}"
+                    if len(tg_parts) > 1:
+                        cap += f" [{pj}/{len(tg_parts)}]"
+                    await tg.send_document(part, cap, chat)
+                    if part != pdf_path:
+                        try: os.remove(part)
+                        except: pass
+                try: os.remove(pdf_path)
+                except: pass
+
+            # free this batch's page images before the next batch
+            shutil.rmtree(folder, ignore_errors=True)
+
+        job["failed"] = total_failed
         job["status"] = "done"
         if chat:
             await tg.send_message(
-                f"<b>✓ Done</b>\n{title}\n{job['ok']} pages | {quality}", chat)
+                f"<b>✓ Done</b>\n{title}\n{total_done} pages | {quality}"
+                + (f" | {len(batches)} parts" if multi else ""), chat)
 
     except Exception as e:
         job["status"] = "error"
