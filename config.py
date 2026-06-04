@@ -20,6 +20,9 @@ REQ_DELAY   = float(os.environ.get("REQ_DELAY", "0.15"))
 TG_MAX_MB   = int(os.environ.get("TG_MAX_MB", "45"))    # Telegram bot upload cap ~50MB
 DO_OCR_DEFAULT = os.environ.get("DO_OCR", "false").lower() == "true"
 OCR_LANG    = os.environ.get("OCR_LANG", "hin+eng")
+# Process big books in page-batches so memory stays flat on the 512MB tier.
+# Each batch is downloaded, built into its own PDF, uploaded, then freed.
+CHUNK_PAGES = int(os.environ.get("CHUNK_PAGES", "40"))
 
 # --- Constants ---
 BASE_URL = "https://yctpublication.com"
