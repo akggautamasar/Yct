@@ -28,37 +28,46 @@ def build_lossless(folder: str, pdf_path: str) -> float:
     if not src_paths:
         return 0.0
 
+    # Normalize every page to clean 8-bit RGB before building.
+    #
+    # Book pages from this site come as PNGs with an alpha channel and
+    # sometimes 16-bit depth. img2pdf either crashes on those (16-bit + alpha)
+    # or wastes time/space building a soft-mask per page. Flattening alpha onto
+    # white and forcing 8-bit RGB is visually lossless for scanned pages and
+    # makes the build fast and reliable. We re-encode to high-quality JPEG
+    # (q=95) which keeps quality high while keeping file size sane.
+    prepared, tmp = [], []
+    for p in src_paths:
+        try:
+            img = Image.open(p)
+            # flatten alpha onto white
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                img = img.convert("RGBA")
+                bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                img = Image.alpha_composite(bg, img).convert("RGB")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            # PIL convert already drops to 8-bit per channel
+            out = os.path.splitext(p)[0] + "_prep.jpg"
+            img.save(out, format="JPEG", quality=95, subsampling=0, optimize=True)
+            prepared.append(out); tmp.append(out)
+        except Exception:
+            # if anything odd, fall back to using the original file as-is
+            prepared.append(p)
+
+    if not prepared:
+        return 0.0
+
     try:
         with open(pdf_path, "wb") as f:
-            f.write(img2pdf.convert(src_paths))
-        return os.path.getsize(pdf_path) / 1_048_576
+            f.write(img2pdf.convert(prepared))
+        mb = os.path.getsize(pdf_path) / 1_048_576
     except Exception:
-        # normalize problematic PNGs (palette/alpha) losslessly, then retry
-        norm, tmp = [], []
-        for p in src_paths:
-            try:
-                if p.lower().endswith(".jpg"):
-                    norm.append(p); continue
-                img = Image.open(p)
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
-                out = p.replace(".png", "_norm.png")
-                img.save(out, format="PNG")
-                norm.append(out); tmp.append(out)
-            except Exception:
-                pass
-        if not norm:
-            return 0.0
-        try:
-            with open(pdf_path, "wb") as f:
-                f.write(img2pdf.convert(norm))
-            mb = os.path.getsize(pdf_path) / 1_048_576
-        except Exception:
-            mb = 0.0
-        for t in tmp:
-            try: os.remove(t)
-            except: pass
-        return mb
+        mb = 0.0
+    for t in tmp:
+        try: os.remove(t)
+        except: pass
+    return mb
 
 
 def _tesseract_ready() -> tuple[bool, list[str]]:
