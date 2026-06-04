@@ -6,7 +6,7 @@ Splits oversized PDFs into Telegram-uploadable parts.
 import os
 import shutil
 from PIL import Image
-from pikepdf import Pdf
+from pypdf import PdfReader, PdfWriter
 
 import config
 
@@ -116,13 +116,13 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
     if not page_pdfs:
         return build_lossless(folder, pdf_path), False
 
-    merged = Pdf.new()
+    writer = PdfWriter()
     count = 0
     for p in page_pdfs:
         try:
-            src = Pdf.open(p)
-            merged.pages.extend(src.pages)
-            src.close()
+            reader = PdfReader(p)
+            for pg in reader.pages:
+                writer.add_page(pg)
             count += 1
         except Exception:
             pass
@@ -133,8 +133,8 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
             except: pass
         return build_lossless(folder, pdf_path), False
 
-    merged.save(pdf_path, compress_streams=True)
-    merged.close()
+    with open(pdf_path, "wb") as f:
+        writer.write(f)
     for p in tmp:
         try: os.remove(p)
         except: pass
@@ -161,8 +161,8 @@ def split_for_telegram(pdf_path: str) -> list[str]:
         return [pdf_path]
 
     base = os.path.splitext(pdf_path)[0]
-    src = Pdf.open(pdf_path)
-    total = len(src.pages)
+    reader = PdfReader(pdf_path)
+    total = len(reader.pages)
     avg = mb / total
     per_chunk = max(1, int((config.TG_MAX_MB * 0.9) / avg))
 
@@ -171,11 +171,11 @@ def split_for_telegram(pdf_path: str) -> list[str]:
         end = min(start + per_chunk, total)
         part_path = f"{base}_part{n}.pdf"
         while True:
-            chunk = Pdf.new()
+            writer = PdfWriter()
             for i in range(start, end):
-                chunk.pages.append(src.pages[i])
-            chunk.save(part_path, compress_streams=True)
-            chunk.close()
+                writer.add_page(reader.pages[i])
+            with open(part_path, "wb") as f:
+                writer.write(f)
             part_mb = os.path.getsize(part_path) / 1_048_576
             if part_mb <= config.TG_MAX_MB or end - start <= 1:
                 break
@@ -184,5 +184,4 @@ def split_for_telegram(pdf_path: str) -> list[str]:
         per_chunk = end - start
         start = end
         n += 1
-    src.close()
     return parts
