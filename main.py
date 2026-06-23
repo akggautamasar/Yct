@@ -39,8 +39,14 @@ async def startup():
 
 @app.api_route("/healthz", methods=["GET", "HEAD"])
 async def healthz():
-    missing = config.validate()
-    return {"ok": not missing, "missing_env": missing}
+    # Only YCT credentials are required for core functionality.
+    # Telegram vars are optional (browser-download works without them).
+    missing_critical = [k for k, v in {
+        "YCT_EMAIL": config.EMAIL,
+        "YCT_PASSWORD": config.PASSWORD,
+    }.items() if not v]
+    missing_all = config.validate()
+    return {"ok": not missing_critical, "missing_env": missing_all}
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
@@ -57,8 +63,12 @@ async def index(request: Request):
 
 @app.get("/api/categories")
 async def api_categories():
-    if not await scraper.login():
-        raise HTTPException(502, "login failed")
+    try:
+        logged_in = await asyncio.wait_for(scraper.login(), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "login timed out — check YCT_EMAIL / YCT_PASSWORD")
+    if not logged_in:
+        raise HTTPException(502, "login failed — check YCT_EMAIL / YCT_PASSWORD")
     cats = await scraper.get_categories()
     return [{"id": k, "name": v} for k, v in sorted(cats.items())]
 
