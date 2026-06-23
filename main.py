@@ -111,20 +111,21 @@ async def api_download(req: DownloadReq):
     return {"job_id": jid}
 
 
-def _safe_files(raw: list) -> list:
-    """Strip server-side path but keep name + consumed so UI can react."""
-    return [{"name": f.get("name", ""), "consumed": f.get("consumed", False)}
-            for f in raw]
+def _safe_job(j: dict) -> dict:
+    """Return a job dict safe to send to the browser (no server paths, no asyncio objects)."""
+    safe = {k: v for k, v in j.items() if not k.startswith("_")}
+    # Sanitise current_part — strip path
+    cp = j.get("current_part")
+    if cp:
+        safe["current_part"] = {k: v for k, v in cp.items() if k != "path"}
+    else:
+        safe["current_part"] = None
+    return safe
 
 
 @app.get("/api/jobs")
 async def api_jobs():
-    result = []
-    for j in jobs.all_jobs():
-        safe = dict(j)
-        safe["download_files"] = _safe_files(j.get("download_files", []))
-        result.append(safe)
-    return result
+    return [_safe_job(j) for j in jobs.all_jobs()]
 
 
 @app.get("/api/jobs/{jid}")
@@ -132,38 +133,42 @@ async def api_job(jid: str):
     j = jobs.get_job(jid)
     if not j:
         raise HTTPException(404, "no such job")
-    safe = dict(j)
-    safe["download_files"] = _safe_files(j.get("download_files", []))
-    return safe
+    return _safe_job(j)
 
 
-@app.get("/api/jobs/{jid}/download/{idx}")
-async def api_job_download(jid: str, idx: int):
+@app.get("/api/jobs/{jid}/download")
+async def api_job_download(jid: str):
+    """Serve the current ready part as a browser download."""
     from starlette.background import BackgroundTask
-
     j = jobs.get_job(jid)
     if not j:
         raise HTTPException(404, "job not found")
-    files = j.get("download_files", [])
-    if idx < 0 or idx >= len(files):
-        raise HTTPException(404, "file index out of range")
-    entry = files[idx]
-    if entry.get("consumed"):
-        raise HTTPException(410, "already downloaded — re-queue the book to get it again")
-    path = entry.get("path", "")
+    cp = j.get("current_part")
+    if not cp:
+        raise HTTPException(404, "no part ready yet")
+    if cp.get("consumed"):
+        raise HTTPException(410, "already downloaded — click 'Done' to get the next part")
+    path = cp.get("path", "")
     if not path or not os.path.exists(path):
-        raise HTTPException(410, "file no longer available — re-queue the book to get it again")
-    filename = entry["name"]
-    # Mark consumed immediately so double-clicks get 410 while streaming
-    entry["consumed"] = True
-    # BackgroundTask runs AFTER the full response is streamed to the browser
+        raise HTTPException(410, "file not available")
+    filename = cp["name"]
+    # Mark consumed immediately to block double-downloads while streaming
+    cp["consumed"] = True
     return FileResponse(
         path,
         media_type="application/pdf",
         filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        background=BackgroundTask(jobs.delete_download_file, jid, idx),
     )
+
+
+@app.post("/api/jobs/{jid}/confirm")
+async def api_job_confirm(jid: str):
+    """User clicked 'Done — get next part'. Releases the gate in the worker."""
+    ok = jobs.confirm_part(jid)
+    if not ok:
+        raise HTTPException(404, "job not found or no part waiting")
+    return {"ok": True}
 
 
 # ---------------- Telegram bot webhook ----------------

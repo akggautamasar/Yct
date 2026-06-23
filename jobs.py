@@ -1,15 +1,15 @@
 """Job queue + single worker.
 
-One book processed at a time to stay within Render's 512MB RAM.
-Jobs live in memory; lost on restart (acceptable for a download tool).
+One book processed at a time to stay within Render's 512 MB RAM.
 
-Browser-download strategy (Render free tier safe):
-  - After a PDF is built it is copied to DOWNLOAD_DIR so the user can
-    download it directly from the browser.
-  - The file is deleted as soon as it is served (one-time link).
-  - A background cleanup task also deletes any file older than
-    DOWNLOAD_TTL_SECONDS (5 min) that was never fetched, ensuring we
-    never accumulate stale PDFs on the 512 MB disk.
+Browser-download strategy — sequential gated parts:
+  - Parts are built one at a time.
+  - After each part is built, the worker PAUSES and waits for the user
+    to click "Done — next part" in the UI (confirms they saved it).
+  - Only then is the part deleted and the next part starts building.
+  - At most 1 PDF exists on disk at any moment → zero accumulation.
+  - A safety timeout (GATE_TIMEOUT_SECONDS) auto-advances if the user
+    disappears, so the job never hangs forever.
 """
 import os
 import re
@@ -18,7 +18,7 @@ import shutil
 import asyncio
 import time
 
-DOWNLOAD_TTL_SECONDS = 5 * 60   # files older than this get auto-purged
+GATE_TIMEOUT_SECONDS = 30 * 60   # auto-advance after 30 min if user vanishes
 
 import config
 import scraper
@@ -27,7 +27,6 @@ import telegram as tg
 
 
 def _safe_filename(name: str, fallback: str) -> str:
-    """Make a filesystem- and Telegram-safe filename from a book title."""
     name = (name or "").strip()
     if not name:
         return fallback
@@ -36,12 +35,11 @@ def _safe_filename(name: str, fallback: str) -> str:
     name = name[:80].strip()
     return name or fallback
 
-# job_id -> dict(status, title, book_id, pages, done, total, ok, failed, ts, error, pdf_links)
+
 JOBS: dict[str, dict] = {}
 _queue: asyncio.Queue | None = None
 _worker_started = False
 
-# Directory to keep finished PDFs for browser download
 DOWNLOAD_DIR = os.path.join(config.WORK_DIR, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -63,9 +61,13 @@ def new_job(book_id: int, title: str, cover: str, start: int, end: int,
         "cover": cover, "start": start, "end": end, "do_ocr": do_ocr,
         "total_pages": total_pages, "done": 0, "total": 0, "ok": 0,
         "failed": 0, "error": None, "ts": int(time.time()),
-        "notify_chat": notify_chat, "pdf_parts": 0, "detail_id": detail_id,
+        "notify_chat": notify_chat, "detail_id": detail_id,
         "browser_download": browser_download,
-        "download_files": [],   # list of {name, path} for browser download
+        # current part ready for download
+        "current_part": None,   # {idx, name, path, total_parts}
+        "parts_done": 0,        # how many parts fully confirmed by user
+        "total_parts": 0,
+        "_gate": None,          # asyncio.Event — set when user clicks Done
     }
     _q().put_nowait(jid)
     return jid
@@ -77,6 +79,33 @@ def get_job(jid: str) -> dict | None:
 
 def all_jobs() -> list[dict]:
     return sorted(JOBS.values(), key=lambda j: j["ts"], reverse=True)
+
+
+def confirm_part(jid: str) -> bool:
+    """Called when user clicks 'Done — get next part'. Releases the gate."""
+    job = JOBS.get(jid)
+    if not job:
+        return False
+    gate: asyncio.Event | None = job.get("_gate")
+    if gate:
+        gate.set()
+        return True
+    return False
+
+
+def _delete_current_part(job: dict):
+    """Delete the file for the current part from disk."""
+    cp = job.get("current_part")
+    if not cp:
+        return
+    path = cp.get("path", "")
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+    cp["path"] = ""
+    cp["consumed"] = True
 
 
 async def _process(jid: str):
@@ -127,6 +156,7 @@ async def _process(jid: str):
         chunk = max(1, config.CHUNK_PAGES)
         batches = [pages[i:i + chunk] for i in range(0, len(pages), chunk)]
         multi = len(batches) > 1
+        job["total_parts"] = len(batches)
 
         if chat:
             extra = (f"\nProcessing in {len(batches)} parts of up to {chunk} pages."
@@ -139,7 +169,6 @@ async def _process(jid: str):
         quality = "max-quality lossless"
         total_done = 0
         total_failed = 0
-        download_files = []
 
         for bi, batch in enumerate(batches, 1):
             b_start, b_end = batch[0], batch[-1]
@@ -174,13 +203,10 @@ async def _process(jid: str):
             if ocr_used:
                 quality = "searchable OCR"
 
-            if mb > 0 and os.path.exists(pdf_path):
-                # Always keep a copy for browser download
-                dl_path = os.path.join(DOWNLOAD_DIR, f"{jid}_{bi}_{display_name}")
-                shutil.copy2(pdf_path, dl_path)
-                download_files.append({"name": display_name, "path": dl_path})
-                job["download_files"] = download_files
+            shutil.rmtree(folder, ignore_errors=True)
 
+            if mb > 0 and os.path.exists(pdf_path):
+                # ── Telegram upload ──
                 if chat:
                     job["status"] = f"uploading part {bi}/{len(batches)}" if multi else "uploading"
                     tg_parts = pdfbuilder.split_for_telegram(pdf_path)
@@ -195,13 +221,43 @@ async def _process(jid: str):
                             try: os.remove(part)
                             except: pass
 
+                # ── Browser download gate ──
+                if browser_download:
+                    dl_path = os.path.join(DOWNLOAD_DIR, f"{jid}_{bi}_{display_name}")
+                    shutil.copy2(pdf_path, dl_path)
+
+                    # Expose to UI
+                    gate = asyncio.Event()
+                    job["_gate"] = gate
+                    job["current_part"] = {
+                        "idx": bi - 1,   # 0-based for API URL
+                        "part_num": bi,
+                        "total_parts": len(batches),
+                        "name": display_name,
+                        "path": dl_path,
+                        "consumed": False,
+                        "pages": f"{b_start}–{b_end}",
+                    }
+                    job["status"] = f"waiting_user part {bi}/{len(batches)}"
+
+                    # Wait for user confirmation OR timeout
+                    try:
+                        await asyncio.wait_for(gate.wait(), timeout=GATE_TIMEOUT_SECONDS)
+                    except asyncio.TimeoutError:
+                        pass   # auto-advance
+
+                    # Delete the part now that user confirmed (or timed out)
+                    _delete_current_part(job)
+                    job["_gate"] = None
+                    job["parts_done"] = bi
+
+                # Delete original build file
                 try: os.remove(pdf_path)
                 except: pass
 
-            shutil.rmtree(folder, ignore_errors=True)
-
         job["failed"] = total_failed
         job["status"] = "done"
+        job["current_part"] = None
         if chat:
             await tg.send_message(
                 f"<b>✓ Done</b>\n{title}\n{total_done} pages | {quality}"
@@ -210,6 +266,7 @@ async def _process(jid: str):
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
+        job["current_part"] = None
         if chat:
             await tg.send_message(f"<b>✗ Failed</b>\n{title}\n{str(e)[:200]}", chat)
 
@@ -223,54 +280,9 @@ async def _worker():
             _q().task_done()
 
 
-def delete_download_file(jid: str, idx: int):
-    """Delete a download file after it has been served (called by BackgroundTask,
-    so it runs only AFTER the full response is streamed to the browser).
-    Updates the entry in-place so the UI shows the consumed state."""
-    job = JOBS.get(jid)
-    if not job:
-        return
-    files = job.get("download_files", [])
-    if idx < 0 or idx >= len(files):
-        return
-    entry = files[idx]
-    path = entry.get("path", "")
-    # Remove the file from disk
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
-    # Update in-place (don't replace the dict — other code may hold a ref)
-    entry["path"] = ""
-    entry["consumed"] = True
-
-
-async def _cleanup_loop():
-    """Every 60 s, purge any download file older than DOWNLOAD_TTL_SECONDS.
-    This catches files that were never fetched (tab closed, etc.)."""
-    while True:
-        await asyncio.sleep(60)
-        now = time.time()
-        for job in list(JOBS.values()):
-            for entry in job.get("download_files", []):
-                path = entry.get("path", "")
-                if not path or entry.get("consumed"):
-                    continue
-                try:
-                    age = now - os.path.getmtime(path)
-                    if age > DOWNLOAD_TTL_SECONDS:
-                        os.remove(path)
-                        entry["path"] = ""
-                        entry["consumed"] = True
-                except OSError:
-                    pass
-
-
 def start_worker():
     global _worker_started
     if _worker_started:
         return
     _worker_started = True
     asyncio.create_task(_worker())
-    asyncio.create_task(_cleanup_loop())
