@@ -276,9 +276,8 @@ async function go({telegram, browser}) {
     do_ocr:$('#ocr').checked,
     total_pages:selected.total||null,
     browser_download:browser,
-    notify_chat:telegram?undefined:null,
+    telegram:telegram,
   };
-  if (!telegram) body.notify_chat=null;
   try {
     await api('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     pollJobs();
