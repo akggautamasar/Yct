@@ -37,17 +37,19 @@ async def startup():
             pass
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 async def healthz():
     missing = config.validate()
     return {"ok": not missing, "missing_env": missing}
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    path = os.path.join(HERE, "static", "index.html")
-    if os.path.exists(path):
-        return FileResponse(path)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
+async def index(request: Request):
+    if request.method == "HEAD":
+        return HTMLResponse(content="", status_code=200)
+    fpath = os.path.join(HERE, "static", "index.html")
+    if os.path.exists(fpath):
+        return FileResponse(fpath)
     return HTMLResponse("<h1>YCT Downloader</h1><p>UI file missing.</p>")
 
 
