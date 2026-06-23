@@ -1,14 +1,15 @@
 """FastAPI app — web UI + REST API + Telegram bot webhook, single process.
 
 Routes:
-  GET  /                       -> web UI
-  GET  /api/categories         -> list categories
-  GET  /api/books?cat=ID       -> list books in a category (with names + page IDs)
-  POST /api/download           -> queue a download job
-  GET  /api/jobs               -> all jobs
-  GET  /api/jobs/{id}          -> one job's status
-  POST /tg/{secret}            -> Telegram webhook
-  GET  /healthz                -> health check
+  GET  /                            -> web UI
+  GET  /api/categories              -> list categories
+  GET  /api/books?cat=ID            -> list books in a category
+  POST /api/download                -> queue a download job
+  GET  /api/jobs                    -> all jobs
+  GET  /api/jobs/{id}               -> one job's status
+  GET  /api/jobs/{id}/download/{n}  -> download a finished PDF (browser)
+  POST /tg/{secret}                 -> Telegram webhook
+  GET  /healthz                     -> health check
 """
 import os
 import asyncio
@@ -29,7 +30,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 @app.on_event("startup")
 async def startup():
     jobs.start_worker()
-    # register the Telegram webhook if we know our public URL
     if config.PUBLIC_URL and config.TG_TOKEN:
         try:
             await tg.set_webhook()
@@ -67,7 +67,6 @@ async def api_books(cat: int):
         raise HTTPException(502, "login failed")
     raw = await scraper.get_books_in_category(cat)
     out = []
-    # resolve names concurrently but politely
     sem = asyncio.Semaphore(5)
 
     async def resolve(b):
@@ -96,7 +95,8 @@ class DownloadReq(BaseModel):
     end: int | None = None
     do_ocr: bool = False
     total_pages: int | None = None
-    notify_chat: str | None = None  # optional override
+    notify_chat: str | None = None
+    browser_download: bool = False
 
 
 @app.post("/api/download")
@@ -105,14 +105,20 @@ async def api_download(req: DownloadReq):
         book_id=req.book_id, title=req.title, cover=req.cover,
         start=req.start, end=req.end, do_ocr=req.do_ocr,
         total_pages=req.total_pages,
-        notify_chat=req.notify_chat or config.TG_CHAT_ID,
+        notify_chat=req.notify_chat if not req.browser_download else (req.notify_chat or config.TG_CHAT_ID),
+        browser_download=req.browser_download,
     )
     return {"job_id": jid}
 
 
 @app.get("/api/jobs")
 async def api_jobs():
-    return jobs.all_jobs()
+    result = []
+    for j in jobs.all_jobs():
+        safe = dict(j)
+        safe["download_files"] = [{"name": f["name"]} for f in j.get("download_files", [])]
+        result.append(safe)
+    return result
 
 
 @app.get("/api/jobs/{jid}")
@@ -120,33 +126,45 @@ async def api_job(jid: str):
     j = jobs.get_job(jid)
     if not j:
         raise HTTPException(404, "no such job")
-    return j
+    safe = dict(j)
+    safe["download_files"] = [{"name": f["name"]} for f in j.get("download_files", [])]
+    return safe
+
+
+@app.get("/api/jobs/{jid}/download/{idx}")
+async def api_job_download(jid: str, idx: int):
+    j = jobs.get_job(jid)
+    if not j:
+        raise HTTPException(404, "job not found")
+    files = j.get("download_files", [])
+    if idx < 0 or idx >= len(files):
+        raise HTTPException(404, "file index out of range")
+    entry = files[idx]
+    if entry.get("consumed"):
+        raise HTTPException(410, "already downloaded — re-queue the book to get it again")
+    path = entry.get("path", "")
+    if not path or not os.path.exists(path):
+        raise HTTPException(410, "file no longer available — re-queue the book to get it again")
+    filename = entry["name"]
+    # Delete from disk immediately after response is sent (one-time link)
+    response = FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        background=None,
+    )
+    # Schedule deletion — runs after the response is fully streamed
+    import asyncio as _aio
+    _aio.get_event_loop().call_soon(jobs.delete_download_file, jid, idx)
+    return response
 
 
 # ---------------- Telegram bot webhook ----------------
-# Minimal command bot:
-#   /start, /help
-#   /cats                       -> list categories
-#   /books <cat_id>             -> list books in a category
-#   /get <book_id> [start] [end] [ocr]
-#   /status                     -> recent jobs
 
-# ---------------- Telegram bot webhook (interactive, button-driven) -------
-#
-# Flow:
-#   /start  -> shows category pages (buttons)
-#   tap a category -> shows books in it (buttons), with page-count lookups
-#   tap a book -> shows that book's total pages + range/OCR choices (buttons)
-#   tap "Whole book" / "First 10" / "First 50" / "Custom" -> queues a job
-#
-# Lightweight in-memory per-chat state for the "Custom range" text step.
-
-# chat_id -> dict(awaiting="range", book_id, detail_id, title, total)
 _CHAT_STATE: dict[str, dict] = {}
-
-# Cache resolved category list and books to avoid re-scraping on every tap.
 _CATS_CACHE: dict[int, str] = {}
-_BOOKS_CACHE: dict[int, list] = {}      # cat_id -> [ {detail_id, book_id, name, cover} ]
+_BOOKS_CACHE: dict[int, list] = {}
 
 CATS_PER_PAGE = 12
 BOOKS_PER_PAGE = 8
@@ -157,7 +175,6 @@ async def _bot_reply(chat_id, text, buttons=None):
 
 
 def _chunk_buttons(items, per_row=2):
-    """items = list of (label, data). Return rows of <= per_row each."""
     rows, row = [], []
     for it in items:
         row.append(it)
@@ -207,7 +224,6 @@ async def _show_books(chat_id, cat_id, page=0, edit=None):
         await _ensure_cats()
         raw = await scraper.get_books_in_category(cat_id)
         resolved = []
-        # resolve names (cap to keep it responsive)
         for b in raw[:60]:
             name, bid = await scraper.get_book_details(b["detail_id"])
             if bid:
@@ -223,7 +239,6 @@ async def _show_books(chat_id, cat_id, page=0, edit=None):
     total_pages = (len(books) + BOOKS_PER_PAGE - 1) // BOOKS_PER_PAGE
     page = max(0, min(page, total_pages - 1))
     chunk = books[page * BOOKS_PER_PAGE:(page + 1) * BOOKS_PER_PAGE]
-    # store index so callback data stays short
     btns = []
     for b in chunk:
         idx = books.index(b)
@@ -249,7 +264,6 @@ async def _show_book_detail(chat_id, cat_id, idx, edit=None):
     if idx >= len(books):
         await _bot_reply(chat_id, "Book not found — /start again."); return
     b = books[idx]
-    # detect total pages now so the user sees it
     if edit:
         await tg.edit_message(chat_id, edit, f"Checking pages for <b>{b['name']}</b>…")
     total = await scraper.get_total_pages(b["book_id"])
@@ -329,7 +343,6 @@ async def handle_callback(cb: dict):
 
 
 async def handle_update(update: dict):
-    # callback button taps
     if "callback_query" in update:
         await handle_callback(update["callback_query"])
         return
@@ -342,7 +355,6 @@ async def handle_update(update: dict):
     if not text:
         return
 
-    # custom-range text step
     st = _CHAT_STATE.get(str(chat_id))
     if st and st.get("awaiting") == "range":
         st.pop("awaiting", None)
@@ -373,7 +385,6 @@ async def handle_update(update: dict):
         await _bot_reply(chat_id, "<b>Recent jobs</b>\n" + "\n".join(lines))
         return
 
-    # still support the old /get for power users
     if cmd == "get":
         if len(parts) < 2 or not parts[1].isdigit():
             await _bot_reply(chat_id, "Usage: /get &lt;book_id&gt; [start] [end]"); return
@@ -393,6 +404,5 @@ async def tg_webhook(secret: str, request: Request):
     if secret != config.TG_WEBHOOK_SECRET:
         raise HTTPException(403, "forbidden")
     update = await request.json()
-    # handle in background so we ACK Telegram fast
     asyncio.create_task(handle_update(update))
     return JSONResponse({"ok": True})
