@@ -224,8 +224,9 @@ async def _worker():
 
 
 def delete_download_file(jid: str, idx: int):
-    """Delete a download file after it has been served and remove it from the
-    job record so the UI hides the download button immediately."""
+    """Delete a download file after it has been served (called by BackgroundTask,
+    so it runs only AFTER the full response is streamed to the browser).
+    Updates the entry in-place so the UI shows the consumed state."""
     job = JOBS.get(jid)
     if not job:
         return
@@ -234,13 +235,15 @@ def delete_download_file(jid: str, idx: int):
         return
     entry = files[idx]
     path = entry.get("path", "")
+    # Remove the file from disk
     try:
         if path and os.path.exists(path):
             os.remove(path)
     except OSError:
         pass
-    # Mark as consumed so the UI button disappears
-    files[idx] = {"name": entry["name"], "path": "", "consumed": True}
+    # Update in-place (don't replace the dict — other code may hold a ref)
+    entry["path"] = ""
+    entry["consumed"] = True
 
 
 async def _cleanup_loop():

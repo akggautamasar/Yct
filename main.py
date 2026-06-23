@@ -111,12 +111,18 @@ async def api_download(req: DownloadReq):
     return {"job_id": jid}
 
 
+def _safe_files(raw: list) -> list:
+    """Strip server-side path but keep name + consumed so UI can react."""
+    return [{"name": f.get("name", ""), "consumed": f.get("consumed", False)}
+            for f in raw]
+
+
 @app.get("/api/jobs")
 async def api_jobs():
     result = []
     for j in jobs.all_jobs():
         safe = dict(j)
-        safe["download_files"] = [{"name": f["name"]} for f in j.get("download_files", [])]
+        safe["download_files"] = _safe_files(j.get("download_files", []))
         result.append(safe)
     return result
 
@@ -127,12 +133,14 @@ async def api_job(jid: str):
     if not j:
         raise HTTPException(404, "no such job")
     safe = dict(j)
-    safe["download_files"] = [{"name": f["name"]} for f in j.get("download_files", [])]
+    safe["download_files"] = _safe_files(j.get("download_files", []))
     return safe
 
 
 @app.get("/api/jobs/{jid}/download/{idx}")
 async def api_job_download(jid: str, idx: int):
+    from starlette.background import BackgroundTask
+
     j = jobs.get_job(jid)
     if not j:
         raise HTTPException(404, "job not found")
@@ -146,18 +154,16 @@ async def api_job_download(jid: str, idx: int):
     if not path or not os.path.exists(path):
         raise HTTPException(410, "file no longer available — re-queue the book to get it again")
     filename = entry["name"]
-    # Delete from disk immediately after response is sent (one-time link)
-    response = FileResponse(
+    # Mark consumed immediately so double-clicks get 410 while streaming
+    entry["consumed"] = True
+    # BackgroundTask runs AFTER the full response is streamed to the browser
+    return FileResponse(
         path,
         media_type="application/pdf",
         filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        background=None,
+        background=BackgroundTask(jobs.delete_download_file, jid, idx),
     )
-    # Schedule deletion — runs after the response is fully streamed
-    import asyncio as _aio
-    _aio.get_event_loop().call_soon(jobs.delete_download_file, jid, idx)
-    return response
 
 
 # ---------------- Telegram bot webhook ----------------
