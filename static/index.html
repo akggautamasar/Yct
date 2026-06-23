@@ -186,19 +186,29 @@ function pillClass(status) {
 
 async function health() {
   try {
-    const h = await api('/healthz');
+    const r = await fetch('/healthz');
+    const h = await r.json();
     const el = $('#health');
     if (h.ok) { el.textContent='configured'; el.className='badge ok'; }
     else { el.textContent='missing: '+h.missing_env.join(', '); el.className='badge warn'; }
-  } catch {}
+  } catch(e) { $('#health').textContent='offline'; }
 }
 
 async function loadCats() {
-  try {
-    const cats = await api('/api/categories');
-    $('#cat').innerHTML = cats.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-  } catch(e) {
-    $('#cat').innerHTML = `<option>error: ${e.message}</option>`;
+  const sel = $('#cat');
+  sel.innerHTML = '<option>Loading...</option>';
+  let retries = 0;
+  while (retries < 3) {
+    try {
+      const cats = await api('/api/categories');
+      if (!cats.length) { sel.innerHTML='<option>No categories found</option>'; return; }
+      sel.innerHTML = cats.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+      return;
+    } catch(e) {
+      retries++;
+      if (retries >= 3) { sel.innerHTML=`<option>Error: ${e.message}</option>`; return; }
+      await new Promise(r=>setTimeout(r, 2000));
+    }
   }
 }
 
