@@ -165,13 +165,21 @@ async def api_job_download(jid: str):
     if not path or not os.path.exists(path):
         raise HTTPException(410, "file not available")
     filename = cp["name"]
-    # Mark consumed immediately to block double-downloads while streaming
-    cp["consumed"] = True
+    # Mark _downloading to block concurrent duplicate requests (NOT consumed —
+    # consumed is only set when the user clicks Done, so the buttons stay visible)
+    if cp.get("_downloading"):
+        raise HTTPException(409, "download already in progress")
+    cp["_downloading"] = True
+
+    def _reset_downloading():
+        cp["_downloading"] = False
+
     return FileResponse(
         path,
         media_type="application/pdf",
         filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        background=BackgroundTask(_reset_downloading),
     )
 
 
