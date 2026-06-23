@@ -107,33 +107,35 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-dl:hover:not(:disabled) { background: rgba(14,165,233,0.2); }
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 
-/* Book list */
+/* Book list - Now with Larger Covers */
 .book-list { flex: 1; overflow-y: auto; padding: 4px 12px 12px; min-height: 0; }
 .book-item {
-  display: flex; align-items: center; gap: 14px; padding: 10px;
+  display: flex; align-items: center; gap: 16px; padding: 12px;
   border: 1px solid var(--border); border-radius: var(--r);
-  margin-bottom: 8px; cursor: pointer; background: var(--card);
+  margin-bottom: 10px; cursor: pointer; background: var(--card);
   transition: all 0.15s;
 }
 .book-item:hover { border-color: var(--border2); background: #1f2742; }
 .book-item.sel { border-color: var(--acc); background: var(--acc-bg); box-shadow: 0 0 0 1px var(--acc); }
+
 .book-cover-img {
-  width: 56px; height: 78px; object-fit: cover;
+  width: 72px; height: 100px; object-fit: cover;
   border-radius: 6px; background: var(--surface); flex-shrink: 0;
   border: 1px solid var(--border);
 }
 .book-icon-fallback {
-  width: 56px; height: 78px; display: flex; align-items: center; justify-content: center;
-  background: var(--surface); border-radius: 6px; font-size: 26px;
+  width: 72px; height: 100px; display: flex; align-items: center; justify-content: center;
+  background: var(--surface); border-radius: 6px; font-size: 32px;
   border: 1px solid var(--border); flex-shrink: 0;
 }
+
 .book-item .info { min-width: 0; flex: 1; }
 .book-item .name {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.35;
-  margin-bottom: 4px; color: #fff;
+  overflow: hidden; font-size: 14.5px; font-weight: 600; line-height: 1.35;
+  margin-bottom: 6px; color: #fff;
 }
-.book-item .sub { font-size: 12px; color: var(--txt3); font-weight: 500; }
+.book-item .sub { font-size: 13px; color: var(--txt3); font-weight: 500; }
 
 /* Options card */
 .opt-card {
@@ -149,23 +151,25 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .chk-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--txt2); cursor: pointer; user-select: none; }
 input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--acc); cursor: pointer; }
 
-/* Selected info */
+/* Selected info - Even larger cover */
 .sel-info {
-  display: none; align-items: center; gap: 14px;
+  display: none; align-items: center; gap: 16px;
   background: linear-gradient(145deg, var(--card), var(--surface));
   border: 1px solid var(--border2); border-radius: var(--r);
-  padding: 14px 16px; margin-bottom: 16px; box-shadow: var(--shadow);
+  padding: 16px; margin-bottom: 16px; box-shadow: var(--shadow);
 }
 .sel-info.show { display: flex; animation: fadeIn 0.3s ease; }
+
 .sel-info-cover, .sel-info-fallback {
-  width: 56px; height: 78px; object-fit: cover; border-radius: 8px;
+  width: 86px; height: 120px; object-fit: cover; border-radius: 8px;
   border: 1px solid var(--border2); flex-shrink: 0;
 }
-.sel-info-fallback { display: flex; align-items: center; justify-content: center; background: var(--bg); font-size: 28px; }
+.sel-info-fallback { display: flex; align-items: center; justify-content: center; background: var(--bg); font-size: 36px; }
+
 .sel-details { flex: 1; min-width: 0; }
-.sel-details strong { color: #fff; display: block; margin-bottom: 4px; font-size: 15px; line-height: 1.3;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.sel-details span { font-size: 12px; color: var(--acc2); font-weight: 500; background: var(--acc-bg); padding: 3px 9px; border-radius: 6px; display: inline-block; }
+.sel-details strong { color: #fff; display: block; margin-bottom: 6px; font-size: 16px; line-height: 1.3;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.sel-details span { font-size: 13px; color: var(--acc2); font-weight: 500; background: var(--acc-bg); padding: 4px 10px; border-radius: 6px; display: inline-block; }
 
 /* Jobs */
 .jobs-section { display: none; }
@@ -615,3 +619,6 @@ $('#loadBooks').onclick = loadBooks;
 </script>
 </body>
 </html>
+
+
+
