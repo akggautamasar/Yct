@@ -292,7 +292,6 @@ function jobCard(jb) {
   const isErr  = jb.status==='error';
   const isWait = (jb.status||'').startsWith('waiting_user');
   const barCls = isDone?'done':isErr?'err':'';
-  const stLabel= isDone?'Done':'':isErr?'Error':fmtStatus(jb.status);
   const pillCls= pillClass(jb.status);
   const ts = new Date(jb.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 
