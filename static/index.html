@@ -5,344 +5,162 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>YCT Downloader</title>
 <style>
-/* ── Design tokens ── */
 :root {
-  --bg:       #080b14;
-  --surface:  #0e1220;
-  --card:     #131826;
-  --border:   #1e2540;
-  --border2:  #2a3158;
-  --txt:      #e2e6f3;
-  --txt2:     #8b93b5;
-  --txt3:     #5a6385;
-  --acc:      #6c63ff;
-  --acc2:     #8b85ff;
-  --acc-bg:   rgba(108,99,255,.12);
-  --ok:       #22d3a5;
-  --ok-bg:    rgba(34,211,165,.1);
-  --warn:     #f59e0b;
-  --warn-bg:  rgba(245,158,11,.1);
-  --err:      #f87171;
-  --err-bg:   rgba(248,113,113,.1);
-  --dl:       #38bdf8;
-  --dl-bg:    rgba(56,189,248,.1);
-  --r:        12px;
-  --r2:       8px;
-  --shadow:   0 4px 24px rgba(0,0,0,.4);
+  --bg:#080b14;--surface:#0e1220;--card:#131826;--border:#1e2540;--border2:#2a3158;
+  --txt:#e2e6f3;--txt2:#8b93b5;--txt3:#5a6385;
+  --acc:#6c63ff;--acc2:#8b85ff;--acc-bg:rgba(108,99,255,.12);
+  --ok:#22d3a5;--ok-bg:rgba(34,211,165,.1);
+  --warn:#f59e0b;--warn-bg:rgba(245,158,11,.1);
+  --err:#f87171;--err-bg:rgba(248,113,113,.1);
+  --dl:#38bdf8;--dl-bg:rgba(56,189,248,.1);
+  --r:12px;--r2:8px;--shadow:0 4px 24px rgba(0,0,0,.4);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{height:100%}
-body{
-  background:var(--bg);
-  color:var(--txt);
-  font:14px/1.6 'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
-  min-height:100vh;
-}
-
-/* ── Layout ── */
+body{background:var(--bg);color:var(--txt);font:14px/1.6 'Inter',system-ui,-apple-system,sans-serif;min-height:100vh}
 .app{display:grid;grid-template-rows:56px 1fr;height:100vh;overflow:hidden}
-
-/* Header */
-header{
-  display:flex;align-items:center;gap:14px;
-  padding:0 20px;
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  position:sticky;top:0;z-index:10;
-}
-.logo{font-size:20px;line-height:1}
+header{display:flex;align-items:center;gap:14px;padding:0 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+.logo{font-size:20px}
 header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
-.badge{
-  margin-left:auto;
-  font-size:11px;padding:3px 9px;border-radius:20px;
-  font-weight:600;
-}
+.badge{margin-left:auto;font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600}
 .badge.ok{background:var(--ok-bg);color:var(--ok);border:1px solid rgba(34,211,165,.2)}
 .badge.warn{background:var(--warn-bg);color:var(--warn);border:1px solid rgba(245,158,11,.2)}
-
-/* Sidebar + main */
 .body{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
-.sidebar{
-  background:var(--surface);
-  border-right:1px solid var(--border);
-  display:flex;flex-direction:column;
-  overflow:hidden;
-}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 .main{overflow-y:auto;padding:20px}
-
-/* Panels */
-.panel{
-  border-bottom:1px solid var(--border);
-  flex-shrink:0;
-}
-.panel-hd{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px;cursor:pointer;user-select:none;
-}
+.panel{border-bottom:1px solid var(--border);flex-shrink:0}
+.panel-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;user-select:none}
 .panel-hd span{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--txt2)}
 .panel-hd .chevron{color:var(--txt3);font-size:12px;transition:transform .2s}
 .panel.open .chevron{transform:rotate(180deg)}
 .panel-body{display:none;padding:0 14px 14px}
 .panel.open .panel-body{display:block}
-
-/* Controls */
-select,input[type=number],input[type=text]{
-  width:100%;
-  background:var(--bg);
-  border:1px solid var(--border2);
-  border-radius:var(--r2);
-  color:var(--txt);
-  padding:8px 11px;
-  font:inherit;
-  outline:none;
-  transition:border-color .15s;
-}
+select,input[type=number],input[type=text]{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:var(--r2);color:var(--txt);padding:8px 11px;font:inherit;outline:none;transition:border-color .15s}
 select:focus,input:focus{border-color:var(--acc)}
 select{cursor:pointer}
-
-/* Buttons */
-.btn{
-  display:inline-flex;align-items:center;gap:7px;
-  border:none;border-radius:var(--r2);
-  font:inherit;font-weight:600;font-size:13px;
-  padding:9px 16px;cursor:pointer;
-  transition:filter .15s,opacity .15s,transform .1s;
-}
+.btn{display:inline-flex;align-items:center;gap:7px;border:none;border-radius:var(--r2);font:inherit;font-weight:600;font-size:13px;padding:9px 16px;cursor:pointer;transition:filter .15s,opacity .15s,transform .1s;text-decoration:none}
 .btn:active{transform:scale(.97)}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
 .btn-pri{background:var(--acc);color:#fff}
 .btn-pri:hover:not(:disabled){filter:brightness(1.1)}
 .btn-ghost{background:transparent;color:var(--txt2);border:1px solid var(--border2)}
-.btn-ghost:hover:not(:disabled){border-color:var(--border2);background:var(--card)}
+.btn-ghost:hover:not(:disabled){background:var(--card)}
 .btn-ok{background:var(--ok-bg);color:var(--ok);border:1px solid rgba(34,211,165,.2)}
 .btn-ok:hover:not(:disabled){filter:brightness(1.1)}
 .btn-dl{background:var(--dl-bg);color:var(--dl);border:1px solid rgba(56,189,248,.2)}
 .btn-dl:hover:not(:disabled){filter:brightness(1.1)}
-.btn-sm{padding:5px 11px;font-size:12px}
 .btn-full{width:100%;justify-content:center}
 .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-
-/* Book list */
-.book-list{
-  overflow-y:auto;
-  max-height:calc(100vh - 56px - 170px);
-  padding:0 14px 14px;
-}
-.book-item{
-  display:flex;align-items:center;gap:10px;
-  padding:10px 11px;
-  border:1px solid var(--border);
-  border-radius:var(--r2);
-  margin-bottom:6px;
-  cursor:pointer;
-  transition:border-color .15s,background .15s;
-}
+.book-list{overflow-y:auto;max-height:calc(100vh - 56px - 170px);padding:0 14px 14px}
+.book-item{display:flex;align-items:center;gap:10px;padding:10px 11px;border:1px solid var(--border);border-radius:var(--r2);margin-bottom:6px;cursor:pointer;transition:border-color .15s,background .15s}
 .book-item:hover{border-color:var(--border2);background:var(--card)}
 .book-item.sel{border-color:var(--acc);background:var(--acc-bg)}
 .book-item .icon{font-size:16px;flex-shrink:0}
 .book-item .info{min-width:0;flex:1}
-.book-item .name{
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  font-size:13px;font-weight:500;
-}
+.book-item .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:500}
 .book-item .sub{font-size:11px;color:var(--txt3)}
-
-/* Options card */
-.opt-card{
-  background:var(--card);
-  border:1px solid var(--border);
-  border-radius:var(--r);
-  padding:18px;
-  margin-bottom:16px;
-}
-.opt-card h2{
-  font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
-  color:var(--txt2);margin-bottom:14px;
-}
+.opt-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:18px;margin-bottom:16px}
+.opt-card h2{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--txt2);margin-bottom:14px}
 .opt-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .opt-row label{font-size:13px;color:var(--txt2);display:flex;align-items:center;gap:8px}
 .opt-row input[type=number]{width:90px}
-.chk-label{
-  display:flex;align-items:center;gap:8px;
-  font-size:13px;color:var(--txt2);cursor:pointer;
-}
-input[type=checkbox]{
-  width:15px;height:15px;
-  accent-color:var(--acc);cursor:pointer;
-}
-
-/* Selected book info */
-.sel-info{
-  font-size:13px;color:var(--txt2);
-  background:var(--acc-bg);border:1px solid rgba(108,99,255,.2);
-  border-radius:var(--r2);padding:10px 12px;margin-bottom:14px;
-  display:none;
-}
+.chk-label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt2);cursor:pointer}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--acc);cursor:pointer}
+.sel-info{font-size:13px;color:var(--txt2);background:var(--acc-bg);border:1px solid rgba(108,99,255,.2);border-radius:var(--r2);padding:10px 12px;margin-bottom:14px;display:none}
 .sel-info.show{display:block}
 .sel-info strong{color:var(--txt);display:block;margin-bottom:2px;font-size:14px}
-
-/* Jobs */
-.jobs-section h2{
-  font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
-  color:var(--txt2);margin-bottom:12px;
-}
-.job-card{
-  background:var(--card);
-  border:1px solid var(--border);
-  border-radius:var(--r);
-  padding:14px 16px;
-  margin-bottom:10px;
-}
-.job-card .title-row{
-  display:flex;justify-content:space-between;align-items:flex-start;gap:10px;
-  margin-bottom:10px;
-}
-.job-card .book-title{
-  font-size:14px;font-weight:600;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;
-}
-.job-card .status-pill{
-  flex-shrink:0;
-  font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;
-}
+.jobs-section h2{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--txt2);margin-bottom:12px}
+.job-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:10px}
+.job-card .title-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}
+.job-card .book-title{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.job-card .status-pill{flex-shrink:0;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
 .pill-done{background:var(--ok-bg);color:var(--ok);border:1px solid rgba(34,211,165,.2)}
-.pill-err {background:var(--err-bg);color:var(--err);border:1px solid rgba(248,113,113,.2)}
-.pill-run {background:var(--acc-bg);color:var(--acc2);border:1px solid rgba(108,99,255,.2)}
+.pill-err{background:var(--err-bg);color:var(--err);border:1px solid rgba(248,113,113,.2)}
+.pill-run{background:var(--acc-bg);color:var(--acc2);border:1px solid rgba(108,99,255,.2)}
 .pill-queue{background:rgba(255,255,255,.05);color:var(--txt3);border:1px solid var(--border)}
-
-.job-card .prog-row{
-  display:flex;align-items:center;gap:10px;margin-bottom:10px;
-}
+.pill-wait{background:var(--dl-bg);color:var(--dl);border:1px solid rgba(56,189,248,.2)}
+.job-card .prog-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .bar{flex:1;height:5px;background:var(--bg);border-radius:99px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--acc);border-radius:99px;transition:width .4s}
 .bar.done i{background:var(--ok)}
 .bar.err i{background:var(--err)}
 .prog-txt{font-size:12px;color:var(--txt3);white-space:nowrap;min-width:60px;text-align:right}
-
-.job-card .meta{font-size:12px;color:var(--txt3);margin-bottom:10px}
+.job-card .meta{font-size:12px;color:var(--txt3);margin-bottom:8px}
 .job-card .err-msg{font-size:12px;color:var(--err);margin-bottom:8px}
-
-.dl-wrap{display:flex;flex-direction:column;gap:7px}
-.dl-row{display:flex;flex-wrap:wrap;gap:7px}
-.dl-hint{font-size:11px;color:var(--warn);opacity:.8}
-.consumed{background:rgba(255,255,255,.04);color:var(--txt3);border:1px solid var(--border);cursor:default}
-
-/* Empty / muted */
+.parts-summary{font-size:12px;color:var(--txt3);margin-bottom:8px}
+/* Gate box — the download + done UI */
+.gate-box{background:var(--bg);border:1px solid rgba(56,189,248,.25);border-radius:var(--r2);padding:14px;margin-top:4px}
+.gate-label{font-size:13px;font-weight:600;color:var(--dl);margin-bottom:4px}
+.gate-hint{font-size:12px;color:var(--txt3);margin-bottom:12px}
+.gate-btns{display:flex;gap:10px;flex-wrap:wrap}
+.gate-waiting{font-size:12px;color:var(--txt3);margin-top:8px;padding:10px 12px;background:var(--bg);border-radius:var(--r2);border:1px solid var(--border)}
 .muted{color:var(--txt3);font-size:13px}
 .empty{text-align:center;padding:40px 20px;color:var(--txt3);font-size:13px}
 .empty .icon{font-size:32px;margin-bottom:10px}
-
-/* Loading spinner */
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .8s linear infinite}
-
-/* Scrollbar */
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:99px}
-
-/* Responsive */
-@media(max-width:700px){
-  .body{grid-template-columns:1fr;grid-template-rows:auto 1fr}
-  .sidebar{max-height:55vh}
-  .book-list{max-height:200px}
-}
+@media(max-width:700px){.body{grid-template-columns:1fr;grid-template-rows:auto 1fr}.sidebar{max-height:55vh}.book-list{max-height:200px}}
 </style>
 </head>
 <body>
 <div class="app">
-
-<!-- Header -->
 <header>
-  <span class="logo">📚</span>
+  <span class="logo">&#128218;</span>
   <h1>YCT Downloader</h1>
-  <span class="badge warn" id="health">checking…</span>
+  <span class="badge warn" id="health">checking&#8230;</span>
 </header>
-
 <div class="body">
-
-  <!-- Sidebar -->
   <aside class="sidebar">
-
-    <!-- Category panel -->
     <div class="panel open" id="panelCat">
       <div class="panel-hd" onclick="togglePanel('panelCat')">
-        <span>Category</span>
-        <span class="chevron">▼</span>
+        <span>Category</span><span class="chevron">&#9660;</span>
       </div>
       <div class="panel-body">
-        <select id="cat"><option>Loading…</option></select>
-        <button class="btn btn-ghost btn-full" id="loadBooks" style="margin-top:10px">
-          Load books
-        </button>
+        <select id="cat"><option>Loading&#8230;</option></select>
+        <button class="btn btn-ghost btn-full" id="loadBooks" style="margin-top:10px">Load books</button>
       </div>
     </div>
-
-    <!-- Book list panel -->
     <div class="panel open" id="panelBooks" style="flex:1;overflow:hidden;display:flex;flex-direction:column;border-bottom:none">
       <div class="panel-hd" onclick="togglePanel('panelBooks')" style="flex-shrink:0">
-        <span>Books</span>
-        <span class="chevron">▼</span>
+        <span>Books</span><span class="chevron">&#9660;</span>
       </div>
       <div class="book-list" id="books">
         <div class="muted" style="padding:10px 0">Pick a category first.</div>
       </div>
     </div>
-
   </aside>
-
-  <!-- Main area -->
   <main class="main">
-
-    <!-- Selected book -->
     <div class="sel-info" id="selInfo">
-      <strong id="selTitle">—</strong>
+      <strong id="selTitle">&#8212;</strong>
       <span id="selMeta"></span>
     </div>
-
-    <!-- Options -->
     <div class="opt-card">
       <h2>Download options</h2>
       <div class="opt-row">
-        <label>Start page
-          <input type="number" id="start" value="1" min="1">
-        </label>
-        <label>End page
-          <input type="number" id="end" placeholder="all">
-        </label>
-        <label class="chk-label">
-          <input type="checkbox" id="ocr">
-          OCR (searchable PDF)
-        </label>
+        <label>Start page<input type="number" id="start" value="1" min="1"></label>
+        <label>End page<input type="number" id="end" placeholder="all"></label>
+        <label class="chk-label"><input type="checkbox" id="ocr"> OCR (searchable PDF)</label>
       </div>
       <div class="btn-row">
-        <button class="btn btn-pri" id="goTelegram" title="Process and send to Telegram">
-          <span>✈</span> Send to Telegram
-        </button>
-        <button class="btn btn-dl" id="goBrowser" title="Process and download in browser">
-          <span>⬇</span> Download to Browser
-        </button>
-        <button class="btn btn-ok" id="goBoth" title="Do both">
-          <span>⚡</span> Both
-        </button>
+        <button class="btn btn-pri" id="goTelegram">&#9992; Send to Telegram</button>
+        <button class="btn btn-dl" id="goBrowser">&#8595; Download to Browser</button>
+        <button class="btn btn-ok" id="goBoth">&#9889; Both</button>
       </div>
     </div>
-
-    <!-- Jobs -->
     <div class="jobs-section">
       <h2>Jobs</h2>
-      <div id="jobs"><div class="empty"><div class="icon">📭</div>No jobs yet.</div></div>
+      <div id="jobs"><div class="empty"><div class="icon">&#128205;</div>No jobs yet.</div></div>
     </div>
-
   </main>
 </div>
 </div>
-
 <script>
 const $ = s => document.querySelector(s);
 let selected = null;
 
-/* ── Helpers ── */
 async function api(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
@@ -350,8 +168,7 @@ async function api(url, opts) {
 }
 
 function togglePanel(id) {
-  const p = document.getElementById(id);
-  p.classList.toggle('open');
+  document.getElementById(id).classList.toggle('open');
 }
 
 function fmtStatus(s) {
@@ -363,177 +180,147 @@ function pillClass(status) {
   if (status === 'done') return 'pill-done';
   if (status === 'error') return 'pill-err';
   if (status === 'queued') return 'pill-queue';
+  if ((status||'').startsWith('waiting_user')) return 'pill-wait';
   return 'pill-run';
 }
 
-/* ── Health ── */
 async function health() {
   try {
     const h = await api('/healthz');
     const el = $('#health');
-    if (h.ok) {
-      el.textContent = 'configured ✓';
-      el.className = 'badge ok';
-    } else {
-      el.textContent = 'missing: ' + h.missing_env.join(', ');
-      el.className = 'badge warn';
-    }
+    if (h.ok) { el.textContent='configured'; el.className='badge ok'; }
+    else { el.textContent='missing: '+h.missing_env.join(', '); el.className='badge warn'; }
   } catch {}
 }
 
-/* ── Categories ── */
 async function loadCats() {
   try {
     const cats = await api('/api/categories');
-    $('#cat').innerHTML = cats.map(c =>
-      `<option value="${c.id}">${c.name}</option>`
-    ).join('');
+    $('#cat').innerHTML = cats.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   } catch(e) {
     $('#cat').innerHTML = `<option>error: ${e.message}</option>`;
   }
 }
 
-/* ── Books ── */
 async function loadBooks() {
   const cat = $('#cat').value;
   const btn = $('#loadBooks');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spin">⟳</span> Loading…';
-  $('#books').innerHTML = '<div class="muted" style="padding:10px 0"><span class="spin">⟳</span> Fetching books…</div>';
+  btn.innerHTML = '<span class="spin">&#8987;</span> Loading&hellip;';
+  $('#books').innerHTML = '<div class="muted" style="padding:10px 0"><span class="spin">&#8987;</span> Fetching books&hellip;</div>';
   try {
-    const books = await api('/api/books?cat=' + cat);
-    if (!books.length) {
-      $('#books').innerHTML = '<div class="muted" style="padding:10px 0">No books found.</div>';
-      return;
-    }
-    $('#books').innerHTML = books.map(b => `
-      <div class="book-item" data-id="${b.book_id}"
-           data-name="${encodeURIComponent(b.name)}"
-           data-cover="${encodeURIComponent(b.cover||'')}">
-        <span class="icon">📖</span>
-        <div class="info">
-          <div class="name">${b.name}</div>
-          <div class="sub">ID ${b.book_id}</div>
-        </div>
-      </div>
-    `).join('');
-    document.querySelectorAll('.book-item').forEach(el => {
-      el.onclick = () => selectBook(el);
-    });
-    // Open books panel
-    const p = document.getElementById('panelBooks');
-    if (!p.classList.contains('open')) p.classList.add('open');
+    const books = await api('/api/books?cat='+cat);
+    if (!books.length) { $('#books').innerHTML='<div class="muted" style="padding:10px 0">No books found.</div>'; return; }
+    $('#books').innerHTML = books.map(b=>`
+      <div class="book-item" data-id="${b.book_id}" data-name="${encodeURIComponent(b.name)}" data-cover="${encodeURIComponent(b.cover||'')}">
+        <span class="icon">&#128216;</span>
+        <div class="info"><div class="name">${b.name}</div><div class="sub">ID ${b.book_id}</div></div>
+      </div>`).join('');
+    document.querySelectorAll('.book-item').forEach(el=>el.onclick=()=>selectBook(el));
+    if (!document.getElementById('panelBooks').classList.contains('open'))
+      document.getElementById('panelBooks').classList.add('open');
   } catch(e) {
-    $('#books').innerHTML = `<div class="muted" style="padding:10px 0">Error: ${e.message}</div>`;
+    $('#books').innerHTML=`<div class="muted" style="padding:10px 0">Error: ${e.message}</div>`;
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Load books';
+    btn.disabled=false; btn.textContent='Load books';
   }
 }
 
 async function selectBook(el) {
-  document.querySelectorAll('.book-item').forEach(x => x.classList.remove('sel'));
+  document.querySelectorAll('.book-item').forEach(x=>x.classList.remove('sel'));
   el.classList.add('sel');
-  selected = {
-    book_id: +el.dataset.id,
-    title: decodeURIComponent(el.dataset.name),
-    cover: decodeURIComponent(el.dataset.cover),
-    total: null,
-  };
-  const info = $('#selInfo');
-  info.classList.add('show');
+  selected = { book_id:+el.dataset.id, title:decodeURIComponent(el.dataset.name), cover:decodeURIComponent(el.dataset.cover), total:null };
+  $('#selInfo').classList.add('show');
   $('#selTitle').textContent = selected.title;
-  $('#selMeta').textContent = `Book ID ${selected.book_id} · checking pages…`;
+  $('#selMeta').textContent = `Book ID ${selected.book_id} - checking pages\u2026`;
   try {
-    const p = await api('/api/pages?book_id=' + selected.book_id);
+    const p = await api('/api/pages?book_id='+selected.book_id);
     selected.total = p.total_pages;
-    const t = p.total_pages || 'unknown';
-    $('#selMeta').textContent = `Book ID ${selected.book_id} · ${t} pages`;
-    if (p.total_pages) {
-      $('#end').placeholder = `all (${p.total_pages})`;
-    }
-  } catch {
-    $('#selMeta').textContent = `Book ID ${selected.book_id}`;
-  }
+    $('#selMeta').textContent = `Book ID ${selected.book_id} - ${p.total_pages||'unknown'} pages`;
+    if (p.total_pages) $('#end').placeholder=`all (${p.total_pages})`;
+  } catch { $('#selMeta').textContent=`Book ID ${selected.book_id}`; }
 }
 
-/* ── Queue a job ── */
-async function go({ telegram, browser }) {
+async function go({telegram, browser}) {
   if (!selected) { alert('Select a book first.'); return; }
   const body = {
-    book_id: selected.book_id,
-    title: selected.title,
-    cover: selected.cover,
-    start: +$('#start').value || 1,
-    end: $('#end').value ? +$('#end').value : null,
-    do_ocr: $('#ocr').checked,
-    total_pages: selected.total || null,
-    browser_download: browser,
-    notify_chat: telegram ? undefined : null,
+    book_id:selected.book_id, title:selected.title, cover:selected.cover,
+    start:+$('#start').value||1,
+    end:$('#end').value?(+$('#end').value):null,
+    do_ocr:$('#ocr').checked,
+    total_pages:selected.total||null,
+    browser_download:browser,
+    notify_chat:telegram?undefined:null,
   };
-  if (!telegram) body.notify_chat = null; // explicitly skip Telegram
-
+  if (!telegram) body.notify_chat=null;
   try {
-    await api('/api/download', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
+    await api('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     pollJobs();
-  } catch(e) {
-    alert('Failed to queue: ' + e.message);
-  }
+  } catch(e) { alert('Failed to queue: '+e.message); }
 }
 
-/* ── Render jobs ── */
+/* ── Job cards ── */
 function jobCard(jb) {
-  const pct = jb.total ? Math.round(jb.done * 100 / jb.total) : 0;
-  const isDone = jb.status === 'done';
-  const isErr  = jb.status === 'error';
-  const barCls = isDone ? 'done' : isErr ? 'err' : '';
-  const stLabel = isDone ? 'Done' : isErr ? 'Error' : fmtStatus(jb.status);
-  const pillCls = pillClass(jb.status);
+  const pct = jb.total ? Math.round(jb.done*100/jb.total) : 0;
+  const isDone = jb.status==='done';
+  const isErr  = jb.status==='error';
+  const isWait = (jb.status||'').startsWith('waiting_user');
+  const barCls = isDone?'done':isErr?'err':'';
+  const stLabel= isDone?'Done':'':isErr?'Error':fmtStatus(jb.status);
+  const pillCls= pillClass(jb.status);
+  const ts = new Date(jb.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 
-  const ts = new Date(jb.ts * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const errMsg = isErr?`<div class="err-msg">Failed: ${jb.error||'Unknown error'}</div>`:'';
 
-  let dlButtons = '';
-  const dls = jb.download_files || [];
-  if (dls.length) {
-    const anyReady = dls.some(f => !f.consumed && f.name);
-    const btns = dls.map((f, i) => {
-      if (f.consumed || !f.name) {
-        return `<span class="btn btn-sm consumed">✓ ${dls.length > 1 ? `Part ${i+1} saved` : 'Saved to device'}</span>`;
-      }
-      // Use onclick to trigger download then let polling update the button
-      return `<a href="/api/jobs/${jb.id}/download/${i}" download="${f.name}"
-                  class="btn btn-dl btn-sm">
-                ⬇ ${dls.length > 1 ? `Download Part ${i+1}` : 'Download PDF'}
-              </a>`;
-    }).join('');
-    const hint = anyReady
-      ? '<div class="dl-hint">⚠ One-time link — file deleted from server after download or 5 min</div>'
-      : '';
-    dlButtons = `<div class="dl-wrap">${hint}<div class="dl-row">${btns}</div></div>`;
+  const totalParts = jb.total_parts||0;
+  const partsDone  = jb.parts_done||0;
+  const partsSummary = totalParts>1
+    ?`<div class="parts-summary">${partsDone}/${totalParts} parts confirmed</div>`:'';
+
+  let dlBlock='';
+  const cp = jb.current_part;
+  if (cp && !cp.consumed && jb.browser_download) {
+    const lbl = totalParts>1
+      ?`Part ${cp.part_num} of ${cp.total_parts} &mdash; pages ${cp.pages}`
+      :'Your PDF is ready';
+    const nxtLbl = cp.part_num < cp.total_parts ? 'Done &mdash; get next part' : 'Done &mdash; finish';
+    dlBlock=`
+<div class="gate-box">
+  <div class="gate-label">&#128196; <b>${lbl}</b></div>
+  <div class="gate-hint">Download it first, then click <b>Done</b> to continue building.</div>
+  <div class="gate-btns">
+    <a href="/api/jobs/${jb.id}/download" download="${cp.name}" class="btn btn-dl">
+      &#8595; Download${totalParts>1?' Part '+cp.part_num:''}
+    </a>
+    <button class="btn btn-ok" onclick="confirmPart('${jb.id}')">&#10003; ${nxtLbl}</button>
+  </div>
+</div>`;
+  } else if (cp && cp.consumed && jb.browser_download && !isDone) {
+    dlBlock=`<div class="gate-waiting">&#9203; Building part ${(cp.part_num||0)+1}&hellip;</div>`;
   }
 
-  const errMsg = isErr
-    ? `<div class="err-msg">✗ ${jb.error || 'Unknown error'}</div>`
-    : '';
+  const statusLabel = isDone ? 'Done' : isErr ? 'Error' : isWait ? 'Waiting' : fmtStatus(jb.status);
 
   return `
 <div class="job-card">
   <div class="title-row">
     <div class="book-title">${jb.title}</div>
-    <span class="status-pill ${pillCls}">${stLabel}</span>
+    <span class="status-pill ${pillCls}">${statusLabel}</span>
   </div>
   <div class="prog-row">
     <div class="bar ${barCls}"><i style="width:${pct}%"></i></div>
-    <div class="prog-txt">${jb.done}/${jb.total || '?'} pages</div>
+    <div class="prog-txt">${jb.done}/${jb.total||'?'} pages</div>
   </div>
-  <div class="meta">Book ID ${jb.book_id} · started ${ts}</div>
-  ${errMsg}
-  ${dlButtons}
+  <div class="meta">Book ID ${jb.book_id} &middot; started ${ts}</div>
+  ${partsSummary}${errMsg}${dlBlock}
 </div>`;
+}
+
+async function confirmPart(jid) {
+  try {
+    await fetch(`/api/jobs/${jid}/confirm`,{method:'POST'});
+    pollJobs();
+  } catch(e) { alert('Error: '+e.message); }
 }
 
 async function pollJobs() {
@@ -541,18 +328,17 @@ async function pollJobs() {
     const js = await api('/api/jobs');
     const el = $('#jobs');
     if (!js.length) {
-      el.innerHTML = '<div class="empty"><div class="icon">📭</div>No jobs yet.</div>';
+      el.innerHTML='<div class="empty"><div class="icon">&#128205;</div>No jobs yet.</div>';
     } else {
-      el.innerHTML = js.map(jobCard).join('');
+      el.innerHTML=js.map(jobCard).join('');
     }
   } catch {}
 }
 
-/* ── Wire up ── */
 $('#loadBooks').onclick = loadBooks;
-$('#goTelegram').onclick = () => go({ telegram: true, browser: false });
-$('#goBrowser').onclick  = () => go({ telegram: false, browser: true });
-$('#goBoth').onclick     = () => go({ telegram: true, browser: true });
+$('#goTelegram').onclick = ()=>go({telegram:true,browser:false});
+$('#goBrowser').onclick  = ()=>go({telegram:false,browser:true});
+$('#goBoth').onclick     = ()=>go({telegram:true,browser:true});
 
 health();
 loadCats();
