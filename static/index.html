@@ -186,28 +186,44 @@ function pillClass(status) {
 
 async function health() {
   try {
-    const r = await fetch('/healthz');
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 8000);
+    const r = await fetch('/healthz', {signal: ctrl.signal});
+    clearTimeout(timer);
     const h = await r.json();
     const el = $('#health');
-    if (h.ok) { el.textContent='configured'; el.className='badge ok'; }
-    else { el.textContent='missing: '+h.missing_env.join(', '); el.className='badge warn'; }
-  } catch(e) { $('#health').textContent='offline'; }
+    if (h.ok) { el.textContent='ready'; el.className='badge ok'; }
+    else { el.textContent='env missing'; el.className='badge warn'; }
+  } catch(e) {
+    $('#health').textContent='starting...';
+    setTimeout(health, 4000); // keep retrying
+  }
 }
 
 async function loadCats() {
   const sel = $('#cat');
   sel.innerHTML = '<option>Loading...</option>';
-  let retries = 0;
-  while (retries < 3) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      const cats = await api('/api/categories');
+      const ctrl = new AbortController();
+      const timer = setTimeout(()=>ctrl.abort(), 35000); // 35s — login can be slow
+      const r = await fetch('/api/categories', {signal: ctrl.signal});
+      clearTimeout(timer);
+      if (!r.ok) {
+        const err = await r.json().catch(()=>({detail:'server error'}));
+        throw new Error(err.detail || r.status);
+      }
+      const cats = await r.json();
       if (!cats.length) { sel.innerHTML='<option>No categories found</option>'; return; }
       sel.innerHTML = cats.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
       return;
     } catch(e) {
-      retries++;
-      if (retries >= 3) { sel.innerHTML=`<option>Error: ${e.message}</option>`; return; }
-      await new Promise(r=>setTimeout(r, 2000));
+      if (attempt < 5) {
+        sel.innerHTML=`<option>Retrying (${attempt}/5)...</option>`;
+        await new Promise(r=>setTimeout(r, 3000));
+      } else {
+        sel.innerHTML=`<option>Failed: ${e.message}</option>`;
+      }
     }
   }
 }
