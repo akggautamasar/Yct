@@ -499,19 +499,19 @@ function jobCard(jb) {
   let dlButtons = '';
   const dls = jb.download_files || [];
   if (dls.length) {
+    const anyReady = dls.some(f => !f.consumed && f.name);
     const btns = dls.map((f, i) => {
       if (f.consumed || !f.name) {
-        return `<span class="btn btn-sm consumed" title="Already downloaded — re-queue to get it again">
-                  ✓ ${dls.length > 1 ? `Part ${i+1} downloaded` : 'Downloaded'}
-                </span>`;
+        return `<span class="btn btn-sm consumed">✓ ${dls.length > 1 ? `Part ${i+1} saved` : 'Saved to device'}</span>`;
       }
+      // Use onclick to trigger download then let polling update the button
       return `<a href="/api/jobs/${jb.id}/download/${i}" download="${f.name}"
-                  class="btn btn-dl btn-sm" title="One-time download — link expires after clicking">
-                ⬇ ${dls.length > 1 ? `Part ${i+1}` : 'Download PDF'}
+                  class="btn btn-dl btn-sm">
+                ⬇ ${dls.length > 1 ? `Download Part ${i+1}` : 'Download PDF'}
               </a>`;
     }).join('');
-    const hint = dls.some(f => !f.consumed && f.name)
-      ? '<div class="dl-hint">⚠ One-time link — auto-deleted after download or 5 min</div>'
+    const hint = anyReady
+      ? '<div class="dl-hint">⚠ One-time link — file deleted from server after download or 5 min</div>'
       : '';
     dlButtons = `<div class="dl-wrap">${hint}<div class="dl-row">${btns}</div></div>`;
   }
