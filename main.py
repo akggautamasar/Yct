@@ -109,6 +109,7 @@ class DownloadReq(BaseModel):
     total_pages: int | None = None
     notify_chat: str | None = None
     browser_download: bool = False
+    telegram: bool = False
 
 
 @app.post("/api/download")
@@ -117,7 +118,7 @@ async def api_download(req: DownloadReq):
         book_id=req.book_id, title=req.title, cover=req.cover,
         start=req.start, end=req.end, do_ocr=req.do_ocr,
         total_pages=req.total_pages,
-        notify_chat=req.notify_chat if not req.browser_download else (req.notify_chat or config.TG_CHAT_ID),
+        notify_chat=(req.notify_chat or config.TG_CHAT_ID) if req.telegram else None,
         browser_download=req.browser_download,
     )
     return {"job_id": jid}
