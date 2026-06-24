@@ -17,6 +17,7 @@ import uuid
 import shutil
 import asyncio
 import time
+import gc
 
 GATE_TIMEOUT_SECONDS = 30 * 60   # auto-advance after 30 min if user vanishes
 
@@ -321,6 +322,9 @@ async def _process(jid: str):
                 try: os.remove(pdf_path)
                 except: pass
                 job["_cur_pdf"] = None
+                # Release the page-image/PDF memory for this batch right now —
+                # don't wait for the next batch or job to trigger a GC cycle.
+                gc.collect()
 
         if job.get("cancelled"):
             _cleanup_job_files(job)

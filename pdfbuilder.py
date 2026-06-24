@@ -4,6 +4,7 @@ Designed to run on Render (512MB). Builds from page images on disk.
 Splits oversized PDFs into Telegram-uploadable parts.
 """
 import os
+import gc
 import shutil
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
@@ -61,9 +62,11 @@ def build_lossless(folder: str, pdf_path: str) -> float:
                 f.write(img2pdf.convert(tmp_jpg))
 
             # --- append to the growing document, then free the page ---
-            reader = PdfReader(tmp_pdf)
-            for pg in reader.pages:
-                writer.add_page(pg)
+            with open(tmp_pdf, "rb") as src:
+                reader = PdfReader(src)
+                for pg in reader.pages:
+                    writer.add_page(pg)
+            del reader
             added += 1
         except Exception:
             pass
@@ -84,6 +87,11 @@ def build_lossless(folder: str, pdf_path: str) -> float:
         mb = os.path.getsize(pdf_path) / 1_048_576
     except Exception:
         mb = 0.0
+    finally:
+        # writer holds every page's content stream in RAM until this point —
+        # drop it immediately so the next batch starts with a clean slate.
+        del writer
+        gc.collect()
     return mb
 
 
@@ -126,10 +134,10 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
     for fn in imgs:
         fp = os.path.join(folder, fn)
         try:
-            img = Image.open(fp)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf")
+            with Image.open(fp) as img:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf")
             if not pdf_bytes:
                 errors += 1; continue
             out = fp + ".ocr.pdf"
@@ -146,9 +154,11 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
     count = 0
     for p in page_pdfs:
         try:
-            reader = PdfReader(p)
-            for pg in reader.pages:
-                writer.add_page(pg)
+            with open(p, "rb") as src:
+                reader = PdfReader(src)
+                for pg in reader.pages:
+                    writer.add_page(pg)
+            del reader
             count += 1
         except Exception:
             pass
@@ -157,6 +167,7 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
         for p in tmp:
             try: os.remove(p)
             except: pass
+        del writer
         return build_lossless(folder, pdf_path), False
 
     with open(pdf_path, "wb") as f:
@@ -164,7 +175,10 @@ def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
     for p in tmp:
         try: os.remove(p)
         except: pass
-    return os.path.getsize(pdf_path) / 1_048_576, True
+    mb = os.path.getsize(pdf_path) / 1_048_576
+    del writer
+    gc.collect()
+    return mb, True
 
 
 def build(folder: str, pdf_path: str, do_ocr: bool) -> tuple[float, bool]:
