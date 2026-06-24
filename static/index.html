@@ -511,11 +511,22 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .job-card:hover { border-color: var(--acc); transform: translateY(-3px); box-shadow: var(--shadow-md), 0 0 18px var(--acc-glow); }
-.job-card .title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.job-card .title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
 .job-card .book-title { font-size: 16px; font-weight: 700; flex: 1; color: var(--txt); line-height: 1.35; }
 .job-card .status-pill {
   flex-shrink: 0; font-size: 12px; font-weight: 800; padding: 6px 14px; border-radius: 30px;
   text-transform: uppercase; letter-spacing: 0.05em; transition: all 0.3s ease;
+}
+.job-cancel {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--border2); background: var(--bg); color: var(--txt3);
+  font-size: 16px; line-height: 1; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; padding: 0;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.job-cancel:hover {
+  color: var(--err); border-color: var(--err); background: var(--err-bg);
+  box-shadow: 0 0 12px rgba(255, 56, 96, 0.4); transform: rotate(90deg) scale(1.1);
 }
 
 .pill-done { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); }
@@ -1111,10 +1122,11 @@ function jobCard(jb) {
   const statusLabel = isDone ? 'Done' : isErr ? 'Error' : isWait ? 'Waiting' : fmtStatus(jb.status);
 
   return `
-<div class="job-card">
+<div class="job-card" id="job-${jb.id}">
   <div class="title-row">
     <div class="book-title">${jb.title}</div>
     <span class="status-pill ${pillCls}">${statusLabel}</span>
+    <button class="job-cancel" title="Cancel &amp; delete this job" onclick="cancelJob('${jb.id}')">&times;</button>
   </div>
   <div class="prog-row">
     <div class="bar ${barCls}"><i style="width:${pct}%"></i></div>
@@ -1130,6 +1142,31 @@ async function confirmPart(jid) {
     await fetch(`/api/jobs/${jid}/confirm`,{method:'POST'});
     pollJobs();
   } catch(e) { alert('Error: '+e.message); }
+}
+
+async function cancelJob(jid) {
+  if (!confirm('Cancel this job and delete any pages already downloaded for it?')) return;
+  const card = document.getElementById('job-'+jid);
+  if (card) {
+    card.style.transition = 'all 0.35s cubic-bezier(0.4,0,0.2,1)';
+    card.style.pointerEvents = 'none';
+    card.style.opacity = '0';
+    card.style.transform = 'translateX(30px) scale(0.97)';
+    card.style.maxHeight = card.offsetHeight + 'px';
+    requestAnimationFrame(() => {
+      card.style.maxHeight = '0px';
+      card.style.marginBottom = '0px';
+      card.style.paddingTop = '0px';
+      card.style.paddingBottom = '0px';
+      card.style.overflow = 'hidden';
+    });
+  }
+  try {
+    await fetch(`/api/jobs/${jid}`, { method: 'DELETE' });
+  } catch (e) {
+    // even if the request fails, refresh — server state is the source of truth
+  }
+  setTimeout(pollJobs, 380);
 }
 
 async function pollJobs() {
