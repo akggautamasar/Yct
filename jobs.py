@@ -68,6 +68,10 @@ def new_job(book_id: int, title: str, cover: str, start: int, end: int,
         "parts_done": 0,        # how many parts fully confirmed by user
         "total_parts": 0,
         "_gate": None,          # asyncio.Event — set when user clicks Done
+        "cancelled": False,     # user requested cancel/delete
+        "_started": False,      # worker has picked this job up
+        "_cur_folder": None,    # in-progress page-image folder (for cleanup)
+        "_cur_pdf": None,       # in-progress built PDF (for cleanup)
     }
     _q().put_nowait(jid)
     return jid
@@ -108,8 +112,52 @@ def _delete_current_part(job: dict):
     cp["consumed"] = True
 
 
+def _cleanup_job_files(job: dict):
+    """Best-effort removal of every file this job may have left on disk."""
+    folder = job.get("_cur_folder")
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+    pdf = job.get("_cur_pdf")
+    if pdf and os.path.exists(pdf):
+        try:
+            os.remove(pdf)
+        except OSError:
+            pass
+    _delete_current_part(job)
+
+
+def cancel_job(jid: str) -> bool:
+    """Cancel a queued/running job (or delete a finished/errored one),
+    freeing any storage it used on the way out. Safe to call at any
+    point in the job's lifecycle — never leaves orphaned files."""
+    job = JOBS.get(jid)
+    if not job:
+        return False
+
+    job["cancelled"] = True
+
+    # Unblock a worker that's paused waiting for the user to confirm a part.
+    gate: asyncio.Event | None = job.get("_gate")
+    if gate and not gate.is_set():
+        gate.set()
+
+    if not job.get("_started") or job.get("status") in ("done", "error", "cancelled"):
+        # Either still sitting in the queue (nothing written to disk yet)
+        # or already finished/errored — safe to clean up and drop now.
+        _cleanup_job_files(job)
+        JOBS.pop(jid, None)
+        return True
+
+    # Actively running — flip the flag, the worker checks it at every safe
+    # checkpoint, cleans up its own in-progress files, and removes the
+    # job entry itself once it unwinds.
+    job["status"] = "cancelling"
+    return True
+
+
 async def _process(jid: str):
     job = JOBS[jid]
+    job["_started"] = True
     chat = job.get("notify_chat")
     book_id = job["book_id"]
     title = job["title"]
@@ -171,9 +219,15 @@ async def _process(jid: str):
         total_failed = 0
 
         for bi, batch in enumerate(batches, 1):
+            if job.get("cancelled"):
+                _cleanup_job_files(job)
+                JOBS.pop(jid, None)
+                return
+
             b_start, b_end = batch[0], batch[-1]
             folder = os.path.join(config.WORK_DIR, f"book_{book_id}_p{b_start}_{b_end}")
             os.makedirs(folder, exist_ok=True)
+            job["_cur_folder"] = folder
 
             job["status"] = f"downloading part {bi}/{len(batches)}" if multi else "downloading"
 
@@ -190,6 +244,11 @@ async def _process(jid: str):
             job["done"] = total_done
             job["failed"] = total_failed
 
+            if job.get("cancelled"):
+                _cleanup_job_files(job)
+                JOBS.pop(jid, None)
+                return
+
             job["status"] = f"building part {bi}/{len(batches)}" if multi else "building_pdf"
             if not multi and start == 1 and end >= total_pages:
                 display_name = f"{safe}.pdf"
@@ -198,12 +257,14 @@ async def _process(jid: str):
             else:
                 display_name = f"{safe} (p{b_start}-{b_end}).pdf"
             pdf_path = os.path.join(config.WORK_DIR, display_name)
+            job["_cur_pdf"] = pdf_path
 
             mb, ocr_used = pdfbuilder.build(folder, pdf_path, job["do_ocr"])
             if ocr_used:
                 quality = "searchable OCR"
 
             shutil.rmtree(folder, ignore_errors=True)
+            job["_cur_folder"] = None
 
             if mb > 0 and os.path.exists(pdf_path):
                 # ── Telegram upload ──
@@ -246,6 +307,11 @@ async def _process(jid: str):
                     except asyncio.TimeoutError:
                         pass   # auto-advance
 
+                    if job.get("cancelled"):
+                        _cleanup_job_files(job)
+                        JOBS.pop(jid, None)
+                        return
+
                     # Delete the part now that user confirmed (or timed out)
                     _delete_current_part(job)
                     job["_gate"] = None
@@ -254,6 +320,12 @@ async def _process(jid: str):
                 # Delete original build file
                 try: os.remove(pdf_path)
                 except: pass
+                job["_cur_pdf"] = None
+
+        if job.get("cancelled"):
+            _cleanup_job_files(job)
+            JOBS.pop(jid, None)
+            return
 
         job["failed"] = total_failed
         job["status"] = "done"
@@ -275,7 +347,8 @@ async def _worker():
     while True:
         jid = await _q().get()
         try:
-            await _process(jid)
+            if jid in JOBS:
+                await _process(jid)
         finally:
             _q().task_done()
 

@@ -1,20 +1,26 @@
 """FastAPI app — web UI + REST API + Telegram bot webhook, single process.
 
 Routes:
-  GET  /                            -> web UI
+  GET  /                            -> web UI (password-gated if SITE_PASSWORD set)
+  POST /login                       -> submit site password, sets auth cookie
   GET  /api/categories              -> list categories
   GET  /api/books?cat=ID            -> list books in a category
   POST /api/download                -> queue a download job
   GET  /api/jobs                    -> all jobs
   GET  /api/jobs/{id}               -> one job's status
   GET  /api/jobs/{id}/download/{n}  -> download a finished PDF (browser)
+  POST /api/jobs/{id}/confirm       -> confirm a downloaded part, advance to next
+  DELETE /api/jobs/{id}             -> cancel/delete a job + wipe its files on disk
   POST /tg/{secret}                 -> Telegram webhook
-  GET  /healthz                     -> health check
+  GET  /healthz                     -> health check (used by Render itself)
+  GET  /ping                        -> lightweight always-200 check (UptimeRobot etc.)
 """
 import os
+import hmac
+import hashlib
 import asyncio
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 import config
@@ -25,6 +31,80 @@ import telegram as tg
 app = FastAPI(title="YCT Downloader")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ---------------- Site password gate ----------------
+# Set SITE_PASSWORD in env to require a password before anyone can use the
+# site. Leave it blank/unset to disable the gate entirely. Paths needed by
+# Render's health check, UptimeRobot, and the Telegram webhook are always
+# left open so the bot and uptime monitor keep working.
+COOKIE_NAME = "yct_auth"
+_OPEN_PATHS = {"/healthz", "/ping", "/login"}
+
+def _auth_token() -> str:
+    return hmac.new(config.SITE_PASSWORD.encode(), b"yct-auth-ok", hashlib.sha256).hexdigest()
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>YCT Downloader — Locked</title>
+<style>
+:root{--bg:#05060f;--acc:#00f0ff;--acc2:#ff2bd6;--txt:#eafcff;--card:rgba(13,18,38,.7);--border:rgba(0,240,255,.3)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100dvh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 20%,#0d0b29,#05060f 70%);
+font:15px/1.6 'Space Grotesk',system-ui,sans-serif;color:var(--txt);padding:20px}
+.box{width:100%;max-width:360px;background:var(--card);border:1px solid var(--border);border-radius:16px;
+padding:32px 28px;backdrop-filter:blur(16px);box-shadow:0 0 40px rgba(0,240,255,.15);text-align:center}
+.icon{font-size:38px;margin-bottom:14px;filter:drop-shadow(0 0 10px var(--acc))}
+h1{font-size:15px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;font-weight:800;
+background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+p{font-size:13px;color:#a9c4d8;margin-bottom:22px}
+input{width:100%;background:#05060f;border:1px solid var(--border);border-radius:8px;color:var(--txt);
+padding:13px 14px;font:inherit;outline:none;margin-bottom:14px;text-align:center;letter-spacing:.1em}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(0,240,255,.15)}
+button{width:100%;border:none;border-radius:8px;padding:13px;font:inherit;font-weight:700;cursor:pointer;
+background:linear-gradient(135deg,var(--acc),var(--acc2));color:#03060d;letter-spacing:.04em}
+button:hover{filter:brightness(1.1)}
+.err{color:#ff3860;font-size:13px;margin-bottom:14px}
+</style></head>
+<body>
+<div class="box">
+  <div class="icon">&#128274;</div>
+  <h1>Access Restricted</h1>
+  <p>Enter the password to use YCT Downloader.</p>
+  __ERROR__
+  <form method="POST" action="/login">
+    <input type="password" name="password" placeholder="PASSWORD" autofocus required/>
+    <button type="submit">Unlock</button>
+  </form>
+</div>
+</body></html>"""
+
+
+@app.middleware("http")
+async def password_gate(request: Request, call_next):
+    if not config.SITE_PASSWORD:
+        return await call_next(request)
+    path = request.url.path
+    if path in _OPEN_PATHS or path.startswith("/tg/"):
+        return await call_next(request)
+    if request.cookies.get(COOKIE_NAME) == _auth_token():
+        return await call_next(request)
+    if request.method == "GET" and "text/html" in (request.headers.get("accept") or ""):
+        return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", ""), status_code=401)
+    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+
+@app.post("/login")
+async def login(request: Request):
+    form = await request.form()
+    pw = (form.get("password") or "").strip()
+    if config.SITE_PASSWORD and pw == config.SITE_PASSWORD:
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie(COOKIE_NAME, _auth_token(), max_age=60 * 60 * 24 * 30,
+                         httponly=True, samesite="lax")
+        return resp
+    err = '<div class="err">Incorrect password — try again.</div>'
+    return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", err), status_code=401)
 
 
 @app.on_event("startup")
@@ -47,6 +127,14 @@ async def healthz():
     }.items() if not v]
     missing_all = config.validate()
     return {"ok": not missing_critical, "missing_env": missing_all}
+
+
+@app.api_route("/ping", methods=["GET", "HEAD"])
+async def ping():
+    """Ultra-light always-200 endpoint for uptime monitors (UptimeRobot etc.)
+    — does no scraping/env checks, just proves the process is alive so the
+    free-tier Render instance doesn't spin down."""
+    return {"status": "alive"}
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
@@ -189,6 +277,16 @@ async def api_job_confirm(jid: str):
     ok = jobs.confirm_part(jid)
     if not ok:
         raise HTTPException(404, "job not found or no part waiting")
+    return {"ok": True}
+
+
+@app.delete("/api/jobs/{jid}")
+async def api_job_delete(jid: str):
+    """Cancel a queued/running job or remove a finished one — and free
+    whatever it had on disk (no leftover pages/PDFs on Render's storage)."""
+    ok = jobs.cancel_job(jid)
+    if not ok:
+        raise HTTPException(404, "no such job")
     return {"ok": True}
 
 

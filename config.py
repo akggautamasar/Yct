@@ -13,6 +13,9 @@ TG_WEBHOOK_SECRET = os.environ.get("TG_WEBHOOK_SECRET", "hook")
 # Public URL of this Render service, e.g. https://yct-xyz.onrender.com
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 
+# --- Site-wide password gate (optional) ---
+SITE_PASSWORD = os.environ.get("SITE_PASSWORD", "")
+
 # --- Tuning ---
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))   # concurrent page fetches
 PAGE_RETRY  = int(os.environ.get("PAGE_RETRY", "5"))

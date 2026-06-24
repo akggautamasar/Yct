@@ -21,6 +21,8 @@ services:
         generateValue: true
       - key: PUBLIC_URL
         sync: false        # set to your https://<service>.onrender.com after first deploy
+      - key: SITE_PASSWORD
+        sync: false        # optional — set any value to password-protect the whole site
       - key: OCR_LANG
         value: hin+eng
       - key: MAX_WORKERS
