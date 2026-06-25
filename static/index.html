@@ -618,13 +618,26 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 [data-theme="light"] .reader-overlay { background: radial-gradient(circle at 50% 30%, #e3eafc 0%, #cfe0f0 80%); }
 
 .reader-top {
-  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px; border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--glass-border);
   background: var(--surface); backdrop-filter: blur(var(--glass-blur));
 }
 .reader-title {
   font-family: var(--font-display); font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
-  color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75vw;
+  color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto; min-width: 0;
+}
+.reader-toolbar { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.reader-tool {
+  width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border2);
+  background: var(--card); color: var(--acc); font-size: 16px; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all 0.2s ease;
+}
+.reader-tool:hover { border-color: var(--acc); box-shadow: 0 0 10px var(--acc-glow); transform: translateY(-1px); }
+.reader-tool.active { color: var(--acc2); border-color: var(--acc2); }
+.reader-zoom-lvl {
+  font-family: var(--font-mono); font-size: 11px; color: var(--txt3); width: 42px; text-align: center;
+  user-select: none;
 }
 .reader-close {
   width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border2);
@@ -637,12 +650,19 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .reader-stage { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px; min-height: 0; overflow: hidden; }
 .reader-page-wrap {
   flex: 1; height: 100%; display: flex; align-items: center; justify-content: center;
-  position: relative; min-width: 0;
+  position: relative; min-width: 0; overflow: hidden; touch-action: none;
 }
+.reader-zoom-wrap {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+  transform: translate(0px, 0px) scale(1); transform-origin: center center;
+  will-change: transform;
+}
+.reader-zoom-wrap.panning { transition: none; }
+.reader-zoom-wrap.snap { transition: transform 0.25s cubic-bezier(0.4,0,0.2,1); }
 .reader-page-img, .reader-page-canvas {
   max-width: 100%; max-height: 100%; object-fit: contain;
   border-radius: 6px; box-shadow: 0 0 40px rgba(0,0,0,0.5), 0 0 0 1px var(--border);
-  background: #fff;
+  background: #fff; user-select: none; -webkit-user-drag: none;
 }
 .reader-spinner {
   position: absolute; font-size: 30px; color: var(--acc); filter: drop-shadow(0 0 10px var(--acc-glow));
@@ -678,8 +698,18 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   width: 52px; padding: 6px 8px; text-align: center; font-family: var(--font-mono);
 }
 
+/* True OS-level fullscreen via the Fullscreen API */
+.reader-overlay:fullscreen,
+.reader-overlay:-webkit-full-screen {
+  width: 100vw; height: 100vh; background: #03040c;
+}
+.reader-overlay:fullscreen .reader-nav,
+.reader-overlay:-webkit-full-screen .reader-nav { width: 52px; height: 52px; font-size: 19px; }
+
 @media (max-width: 768px) {
-  .reader-title { max-width: 55vw; font-size: 12px; }
+  .reader-title { max-width: 34vw; font-size: 11.5px; }
+  .reader-tool { width: 28px; height: 28px; font-size: 14px; }
+  .reader-zoom-lvl { display: none; }
   .reader-nav { width: 38px; height: 38px; font-size: 14px; }
   .reader-stage { padding: 6px; gap: 4px; }
 }
@@ -816,13 +846,21 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 <div class="reader-overlay" id="readerOverlay">
   <div class="reader-top">
     <div class="reader-title" id="readerTitle">&mdash;</div>
+    <div class="reader-toolbar">
+      <button class="reader-tool" id="readerZoomOut" aria-label="Zoom out" title="Zoom out">&#8722;</button>
+      <span class="reader-zoom-lvl" id="readerZoomLvl">100%</span>
+      <button class="reader-tool" id="readerZoomIn" aria-label="Zoom in" title="Zoom in">&#43;</button>
+      <button class="reader-tool" id="readerFullscreen" aria-label="Toggle fullscreen" title="Fullscreen">&#9974;</button>
+    </div>
     <button class="reader-close" id="readerClose" aria-label="Close reader">&times;</button>
   </div>
   <div class="reader-stage" id="readerStage">
     <button class="reader-nav prev" id="readerPrev" aria-label="Previous page">&#10094;</button>
     <div class="reader-page-wrap" id="readerPageWrap">
-      <img id="readerImg" class="reader-page-img" alt="page" style="display:none;"/>
-      <canvas id="readerCanvas" class="reader-page-canvas" style="display:none;"></canvas>
+      <div class="reader-zoom-wrap" id="readerZoomWrap">
+        <img id="readerImg" class="reader-page-img" alt="page" style="display:none;"/>
+        <canvas id="readerCanvas" class="reader-page-canvas" style="display:none;"></canvas>
+      </div>
       <div class="reader-spinner" id="readerSpinner"><span class="spin">&#8987;</span></div>
       <div class="reader-error" id="readerError" style="display:none;">Couldn't load this page.</div>
     </div>
@@ -843,7 +881,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
     <div class="sel-details">
       <strong id="selTitle">&#8212;</strong>
       <span id="selMeta"></span>
-      <button class="btn btn-ghost reader-preview-btn" id="previewBtn" type="button">&#128065; Preview Book</button>
+      <button class="btn btn-ghost reader-preview-btn" id="previewBtn" type="button">&#128214; Read Online</button>
     </div>
   </div>
   <div class="opt-card" id="optCard">
@@ -1304,15 +1342,26 @@ async function pollJobs() {
 
 // ===================== EBOOK READER =====================
 // Two modes:
-//  'img' — preview a book before downloading. Streams ONE page image at a
-//          time from /api/books/{id}/page/{n}; nothing is saved to disk and
-//          the server only ever caches a handful of pages in RAM.
+//  'img' — read a book online before downloading. Streams ONE page image at
+//          a time from /api/books/{id}/page/{n}; nothing is saved to disk
+//          and the server only ever caches a handful of pages in RAM.
 //  'pdf' — reopen a part that's already been built for this job. Uses
 //          pdf.js, which lazily fetches/renders one page at a time via
 //          range requests instead of loading the whole file into memory.
 const reader = {
   mode: null, bookId: null, jobId: null, total: 1, page: 1,
   pdfDoc: null, pdfTask: null, rendering: false,
+};
+
+// Zoom/pan state — independent of which page is showing. Pinch-zooming or
+// panning NEVER changes reader.page; only the nav buttons/slider/swipe do.
+const zoom = {
+  scale: 1, x: 0, y: 0,
+  minScale: 1, maxScale: 4,
+  pinching: false, panning: false,
+  startDist: 0, startScale: 1,
+  startX: 0, startY: 0, startPanX: 0, startPanY: 0,
+  lastTapTime: 0,
 };
 
 function _readerEls() {
@@ -1328,7 +1377,39 @@ function _readerEls() {
     total: document.getElementById('readerTotal'),
     prev: document.getElementById('readerPrev'),
     next: document.getElementById('readerNext'),
+    wrap: document.getElementById('readerPageWrap'),
+    zoomWrap: document.getElementById('readerZoomWrap'),
+    zoomLvl: document.getElementById('readerZoomLvl'),
   };
+}
+
+function _applyZoom(snap) {
+  const els = _readerEls();
+  els.zoomWrap.classList.toggle('snap', !!snap);
+  els.zoomWrap.style.transform = `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
+  els.zoomLvl.textContent = Math.round(zoom.scale * 100) + '%';
+  els.wrap.style.cursor = zoom.scale > 1 ? 'grab' : '';
+}
+
+function _resetZoom(snap) {
+  zoom.scale = 1; zoom.x = 0; zoom.y = 0;
+  _applyZoom(snap);
+}
+
+function _clampPan() {
+  // keep the page from being dragged entirely off-screen
+  const els = _readerEls();
+  const maxX = (els.wrap.clientWidth * (zoom.scale - 1)) / 2 + 40;
+  const maxY = (els.wrap.clientHeight * (zoom.scale - 1)) / 2 + 40;
+  zoom.x = Math.max(-maxX, Math.min(maxX, zoom.x));
+  zoom.y = Math.max(-maxY, Math.min(maxY, zoom.y));
+}
+
+function readerZoomBy(delta) {
+  zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, +(zoom.scale + delta).toFixed(2)));
+  if (zoom.scale === 1) { zoom.x = 0; zoom.y = 0; }
+  _clampPan();
+  _applyZoom(true);
 }
 
 function openPreviewReader() {
@@ -1339,11 +1420,12 @@ function openPreviewReader() {
   reader.jobId = null;
   reader.total = selected.total || 9999;
   reader.page = 1;
-  els.title.textContent = '👁 ' + (selected.title || 'Preview');
+  els.title.textContent = '📖 ' + (selected.title || 'Read Online');
   els.slider.max = String(reader.total);
   els.total.textContent = selected.total ? String(selected.total) : '?';
   els.canvas.style.display = 'none';
   els.error.style.display = 'none';
+  _resetZoom(false);
   els.overlay.classList.add('show');
   document.body.style.overflow = 'hidden';
   readerShowPage(1);
@@ -1359,6 +1441,7 @@ async function openPdfReader(jid, title) {
   els.title.textContent = '📖 ' + (title || 'Reading');
   els.img.style.display = 'none';
   els.error.style.display = 'none';
+  _resetZoom(false);
   els.overlay.classList.add('show');
   document.body.style.overflow = 'hidden';
   _readerSpin(true);
@@ -1390,6 +1473,7 @@ function readerShowPage(n) {
   els.prev.disabled = n <= 1;
   els.next.disabled = !!reader.total && n >= reader.total;
   els.error.style.display = 'none';
+  _resetZoom(false);
 
   if (reader.mode === 'img') {
     _readerSpin(true);
@@ -1415,7 +1499,7 @@ async function renderPdfPage(n) {
     const page = await reader.pdfDoc.getPage(n);
     const canvas = els.canvas;
     const ctx = canvas.getContext('2d');
-    const wrap = document.getElementById('readerPageWrap');
+    const wrap = els.wrap;
     const vp0 = page.getViewport({ scale: 1 });
     const scale = Math.min(2.2, (wrap.clientWidth - 16) / vp0.width, (wrap.clientHeight - 16) / vp0.height);
     const viewport = page.getViewport({ scale: Math.max(0.3, scale) });
@@ -1433,14 +1517,36 @@ async function renderPdfPage(n) {
   }
 }
 
+async function _toggleFullscreen() {
+  const els = _readerEls();
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+  try {
+    if (!isFs) {
+      if (els.overlay.requestFullscreen) await els.overlay.requestFullscreen();
+      else if (els.overlay.webkitRequestFullscreen) els.overlay.webkitRequestFullscreen();
+    } else {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  } catch {}
+}
+document.addEventListener('fullscreenchange', () => {
+  document.getElementById('readerFullscreen').classList.toggle('active',
+    !!(document.fullscreenElement === document.getElementById('readerOverlay')));
+});
+
 function closeReader() {
   const els = _readerEls();
   els.overlay.classList.remove('show');
   document.body.style.overflow = '';
+  if (document.fullscreenElement === els.overlay) {
+    try { document.exitFullscreen(); } catch {}
+  }
   // free everything immediately — don't wait for GC
   els.img.src = '';
   if (reader.pdfDoc) { try { reader.pdfDoc.destroy(); } catch {} }
   reader.pdfDoc = null; reader.mode = null; reader.bookId = null; reader.jobId = null;
+  _resetZoom(false);
 }
 
 document.getElementById('readerClose').onclick = closeReader;
@@ -1448,23 +1554,114 @@ document.getElementById('readerPrev').onclick = () => readerShowPage(reader.page
 document.getElementById('readerNext').onclick = () => readerShowPage(reader.page + 1);
 document.getElementById('readerSlider').oninput = (e) => readerShowPage(+e.target.value);
 document.getElementById('readerPageInput').onchange = (e) => readerShowPage(+e.target.value);
+document.getElementById('readerZoomIn').onclick = () => readerZoomBy(0.4);
+document.getElementById('readerZoomOut').onclick = () => readerZoomBy(-0.4);
+document.getElementById('readerFullscreen').onclick = _toggleFullscreen;
 document.addEventListener('keydown', (e) => {
   if (!document.getElementById('readerOverlay').classList.contains('show')) return;
   if (e.key === 'Escape') closeReader();
-  else if (e.key === 'ArrowLeft') readerShowPage(reader.page - 1);
-  else if (e.key === 'ArrowRight') readerShowPage(reader.page + 1);
+  else if (e.key === 'ArrowLeft' && zoom.scale === 1) readerShowPage(reader.page - 1);
+  else if (e.key === 'ArrowRight' && zoom.scale === 1) readerShowPage(reader.page + 1);
+  else if (e.key === '+' || e.key === '=') readerZoomBy(0.4);
+  else if (e.key === '-') readerZoomBy(-0.4);
 });
-// swipe support
+
+// ---- Touch: pinch-to-zoom, pan-when-zoomed, swipe-to-turn-page-when-not ----
 (function() {
   const wrap = document.getElementById('readerPageWrap');
-  let sx = null;
-  wrap.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
-  wrap.addEventListener('touchend', e => {
-    if (sx === null) return;
-    const dx = e.changedTouches[0].clientX - sx;
-    if (Math.abs(dx) > 50) readerShowPage(reader.page + (dx < 0 ? 1 : -1));
-    sx = null;
+  let swipeStartX = null, swipeStartY = null, moved = false;
+
+  function dist(t0, t1) {
+    return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+  }
+
+  wrap.addEventListener('touchstart', (e) => {
+    moved = false;
+    if (e.touches.length === 2) {
+      zoom.pinching = true; zoom.panning = false;
+      zoom.startDist = dist(e.touches[0], e.touches[1]);
+      zoom.startScale = zoom.scale;
+      swipeStartX = null;
+    } else if (e.touches.length === 1) {
+      if (zoom.scale > 1) {
+        zoom.panning = true;
+        zoom.startX = e.touches[0].clientX; zoom.startY = e.touches[0].clientY;
+        zoom.startPanX = zoom.x; zoom.startPanY = zoom.y;
+      } else {
+        swipeStartX = e.touches[0].clientX;
+        swipeStartY = e.touches[0].clientY;
+      }
+    }
   }, { passive: true });
+
+  wrap.addEventListener('touchmove', (e) => {
+    moved = true;
+    if (zoom.pinching && e.touches.length === 2) {
+      const d = dist(e.touches[0], e.touches[1]);
+      zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, zoom.startScale * (d / zoom.startDist)));
+      _clampPan();
+      _applyZoom(false);
+    } else if (zoom.panning && e.touches.length === 1) {
+      zoom.x = zoom.startPanX + (e.touches[0].clientX - zoom.startX);
+      zoom.y = zoom.startPanY + (e.touches[0].clientY - zoom.startY);
+      _clampPan();
+      _applyZoom(false);
+    }
+  }, { passive: true });
+
+  wrap.addEventListener('touchend', (e) => {
+    if (zoom.pinching) {
+      zoom.pinching = false;
+      if (zoom.scale < 1.05) _resetZoom(true);
+      else _applyZoom(true);
+      return;
+    }
+    if (zoom.panning) { zoom.panning = false; return; }
+    // Not zoomed and not pinching — check for swipe (page turn) or double-tap (zoom)
+    if (swipeStartX !== null && zoom.scale === 1) {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - swipeStartX, dy = t.clientY - swipeStartY;
+      if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        readerShowPage(reader.page + (dx < 0 ? 1 : -1));
+      } else if (!moved) {
+        const now = Date.now();
+        if (now - zoom.lastTapTime < 320) {
+          // double-tap: zoom in centered roughly where tapped
+          zoom.scale = 2.2; _clampPan(); _applyZoom(true);
+        }
+        zoom.lastTapTime = now;
+      }
+    }
+    swipeStartX = null;
+  }, { passive: true });
+
+  // Desktop: Ctrl/Cmd + wheel to zoom, drag-to-pan when zoomed
+  wrap.addEventListener('wheel', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    readerZoomBy(e.deltaY < 0 ? 0.25 : -0.25);
+  }, { passive: false });
+
+  let dragging = false, dragStartX = 0, dragStartY = 0, dragPanX = 0, dragPanY = 0;
+  wrap.addEventListener('mousedown', (e) => {
+    if (zoom.scale <= 1) return;
+    dragging = true;
+    dragStartX = e.clientX; dragStartY = e.clientY;
+    dragPanX = zoom.x; dragPanY = zoom.y;
+    wrap.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    zoom.x = dragPanX + (e.clientX - dragStartX);
+    zoom.y = dragPanY + (e.clientY - dragStartY);
+    _clampPan();
+    _applyZoom(false);
+  });
+  window.addEventListener('mouseup', () => { dragging = false; if (zoom.scale > 1) wrap.style.cursor = 'grab'; });
+  wrap.addEventListener('dblclick', () => {
+    if (zoom.scale > 1) _resetZoom(true);
+    else { zoom.scale = 2.2; _clampPan(); _applyZoom(true); }
+  });
 })();
 
 renderMain();
