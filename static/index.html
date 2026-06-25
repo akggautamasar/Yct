@@ -605,6 +605,85 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .main-empty h3 { font-family: var(--font-display); font-size: 16px; color: var(--txt); font-weight: 700; margin-bottom: 10px; letter-spacing: 0.02em; }
 .main-empty p { font-size: 14px; max-width: 360px; line-height: 1.6; }
 
+/* --- EBOOK READER OVERLAY --- */
+.reader-preview-btn { margin-top: 12px; width: 100%; font-size: 13px; padding: 10px 16px; }
+
+.reader-overlay {
+  position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
+  background: radial-gradient(circle at 50% 30%, #0d0b29 0%, #03040c 75%);
+  opacity: 0; pointer-events: none; visibility: hidden;
+  transition: opacity 0.3s ease;
+}
+.reader-overlay.show { opacity: 1; pointer-events: auto; visibility: visible; }
+[data-theme="light"] .reader-overlay { background: radial-gradient(circle at 50% 30%, #e3eafc 0%, #cfe0f0 80%); }
+
+.reader-top {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--glass-border);
+  background: var(--surface); backdrop-filter: blur(var(--glass-blur));
+}
+.reader-title {
+  font-family: var(--font-display); font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75vw;
+}
+.reader-close {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border2);
+  background: var(--card); color: var(--txt2); font-size: 18px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: all 0.25s ease;
+}
+.reader-close:hover { color: var(--err); border-color: var(--err); box-shadow: 0 0 12px rgba(255,56,96,0.4); transform: rotate(90deg); }
+
+.reader-stage { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px; min-height: 0; overflow: hidden; }
+.reader-page-wrap {
+  flex: 1; height: 100%; display: flex; align-items: center; justify-content: center;
+  position: relative; min-width: 0;
+}
+.reader-page-img, .reader-page-canvas {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  border-radius: 6px; box-shadow: 0 0 40px rgba(0,0,0,0.5), 0 0 0 1px var(--border);
+  background: #fff;
+}
+.reader-spinner {
+  position: absolute; font-size: 30px; color: var(--acc); filter: drop-shadow(0 0 10px var(--acc-glow));
+  display: none;
+}
+.reader-spinner.show { display: block; }
+.reader-error {
+  color: var(--txt3); font-size: 14px; text-align: center; padding: 20px;
+}
+.reader-nav {
+  flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%;
+  border: 1px solid var(--border2); background: var(--card); color: var(--acc);
+  font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+}
+.reader-nav:hover:not(:disabled) { border-color: var(--acc); box-shadow: 0 0 14px var(--acc-glow); transform: scale(1.08); }
+.reader-nav:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.reader-bottom {
+  flex-shrink: 0; display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px calc(14px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--glass-border); background: var(--surface);
+  backdrop-filter: blur(var(--glass-blur));
+}
+.reader-bottom input[type=range] {
+  flex: 1; accent-color: var(--acc); height: 4px; cursor: pointer;
+}
+.reader-pageno {
+  flex-shrink: 0; display: flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 13px; color: var(--txt2); white-space: nowrap;
+}
+.reader-pageno input {
+  width: 52px; padding: 6px 8px; text-align: center; font-family: var(--font-mono);
+}
+
+@media (max-width: 768px) {
+  .reader-title { max-width: 55vw; font-size: 12px; }
+  .reader-nav { width: 38px; height: 38px; font-size: 14px; }
+  .reader-stage { padding: 6px; gap: 4px; }
+}
+
 /* Custom Scrollbars */
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -732,6 +811,31 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   <div id="sheetContent"></div>
 </div>
 
+<!-- In-browser ebook reader: image-preview mode (before downloading)
+     or PDF mode (re-opening a part that's already built) -->
+<div class="reader-overlay" id="readerOverlay">
+  <div class="reader-top">
+    <div class="reader-title" id="readerTitle">&mdash;</div>
+    <button class="reader-close" id="readerClose" aria-label="Close reader">&times;</button>
+  </div>
+  <div class="reader-stage" id="readerStage">
+    <button class="reader-nav prev" id="readerPrev" aria-label="Previous page">&#10094;</button>
+    <div class="reader-page-wrap" id="readerPageWrap">
+      <img id="readerImg" class="reader-page-img" alt="page" style="display:none;"/>
+      <canvas id="readerCanvas" class="reader-page-canvas" style="display:none;"></canvas>
+      <div class="reader-spinner" id="readerSpinner"><span class="spin">&#8987;</span></div>
+      <div class="reader-error" id="readerError" style="display:none;">Couldn't load this page.</div>
+    </div>
+    <button class="reader-nav next" id="readerNext" aria-label="Next page">&#10095;</button>
+  </div>
+  <div class="reader-bottom">
+    <input type="range" id="readerSlider" min="1" max="1" value="1"/>
+    <div class="reader-pageno">
+      <input type="number" id="readerPageInput" min="1" value="1"/> / <span id="readerTotal">?</span>
+    </div>
+  </div>
+</div>
+
 <!-- Reusable content templates -->
 <template id="tplDetails">
   <div class="sel-info" id="selInfo">
@@ -739,6 +843,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
     <div class="sel-details">
       <strong id="selTitle">&#8212;</strong>
       <span id="selMeta"></span>
+      <button class="btn btn-ghost reader-preview-btn" id="previewBtn" type="button">&#128065; Preview Book</button>
     </div>
   </div>
   <div class="opt-card" id="optCard">
@@ -760,6 +865,12 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   </div>
 </template>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+<script>
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js';
+}
+</script>
 <script>
 const $ = s => document.querySelector(s);
 let selected = null;
@@ -877,6 +988,7 @@ function bindActions() {
   $('#goTelegram').onclick = ()=>go({telegram:true,browser:false});
   $('#goBrowser').onclick  = ()=>go({telegram:false,browser:true});
   $('#goBoth').onclick     = ()=>go({telegram:true,browser:true});
+  $('#previewBtn').onclick = ()=>openPreviewReader();
 }
 
 // On mobile, content lives inside the sheet.
@@ -1055,6 +1167,7 @@ async function selectBook(el) {
     : `<div class="sel-info-fallback">📚</div>`;
   $('#selCoverContainer').innerHTML = selCoverHtml;
   $('#selMeta').innerHTML = `<span class="spin" style="font-size:12px; margin-right:6px;">&#8987;</span> Checking pages&hellip;`;
+  $('#previewBtn').disabled = true;
 
   openSheet();
 
@@ -1063,8 +1176,10 @@ async function selectBook(el) {
     selected.total = p.total_pages;
     $('#selMeta').innerHTML = `&#128196; ${p.total_pages||'Unknown'} pages &nbsp;&middot;&nbsp; ID ${selected.book_id}`;
     if (p.total_pages) $('#end').placeholder=`all (${p.total_pages})`;
+    $('#previewBtn').disabled = !p.total_pages;
   } catch {
     $('#selMeta').innerHTML = `ID ${selected.book_id}`;
+    $('#previewBtn').disabled = true;
   }
 }
 
@@ -1112,6 +1227,7 @@ function jobCard(jb) {
   <div class="gate-hint">Save the file to your device, then tap <b>Done</b>.</div>
   <div class="gate-btns">
     <a href="/api/jobs/${jb.id}/download" download="${cp.name}" class="btn btn-dl">&#8595; Download${totalParts>1?' Part '+cp.part_num:''}</a>
+    <button class="btn btn-ghost" onclick="openPdfReader('${jb.id}','${(cp.name||jb.title||'').replace(/'/g,"\\'")}')">&#128214; Read</button>
     <button class="btn btn-ok" onclick="confirmPart('${jb.id}')">&#10003; ${nxtLbl}</button>
   </div>
 </div>`;
@@ -1185,6 +1301,171 @@ async function pollJobs() {
     }
   } catch {}
 }
+
+// ===================== EBOOK READER =====================
+// Two modes:
+//  'img' — preview a book before downloading. Streams ONE page image at a
+//          time from /api/books/{id}/page/{n}; nothing is saved to disk and
+//          the server only ever caches a handful of pages in RAM.
+//  'pdf' — reopen a part that's already been built for this job. Uses
+//          pdf.js, which lazily fetches/renders one page at a time via
+//          range requests instead of loading the whole file into memory.
+const reader = {
+  mode: null, bookId: null, jobId: null, total: 1, page: 1,
+  pdfDoc: null, pdfTask: null, rendering: false,
+};
+
+function _readerEls() {
+  return {
+    overlay: document.getElementById('readerOverlay'),
+    title: document.getElementById('readerTitle'),
+    img: document.getElementById('readerImg'),
+    canvas: document.getElementById('readerCanvas'),
+    spinner: document.getElementById('readerSpinner'),
+    error: document.getElementById('readerError'),
+    slider: document.getElementById('readerSlider'),
+    pageInput: document.getElementById('readerPageInput'),
+    total: document.getElementById('readerTotal'),
+    prev: document.getElementById('readerPrev'),
+    next: document.getElementById('readerNext'),
+  };
+}
+
+function openPreviewReader() {
+  if (!selected || !selected.book_id) return;
+  const els = _readerEls();
+  reader.mode = 'img';
+  reader.bookId = selected.book_id;
+  reader.jobId = null;
+  reader.total = selected.total || 9999;
+  reader.page = 1;
+  els.title.textContent = '👁 ' + (selected.title || 'Preview');
+  els.slider.max = String(reader.total);
+  els.total.textContent = selected.total ? String(selected.total) : '?';
+  els.canvas.style.display = 'none';
+  els.error.style.display = 'none';
+  els.overlay.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  readerShowPage(1);
+}
+
+async function openPdfReader(jid, title) {
+  const els = _readerEls();
+  reader.mode = 'pdf';
+  reader.jobId = jid;
+  reader.bookId = null;
+  reader.page = 1;
+  reader.pdfDoc = null;
+  els.title.textContent = '📖 ' + (title || 'Reading');
+  els.img.style.display = 'none';
+  els.error.style.display = 'none';
+  els.overlay.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  _readerSpin(true);
+  try {
+    if (!window.pdfjsLib) throw new Error('PDF engine failed to load — check your connection');
+    reader.pdfTask = pdfjsLib.getDocument({ url: `/api/jobs/${jid}/read`, withCredentials: true });
+    reader.pdfDoc = await reader.pdfTask.promise;
+    reader.total = reader.pdfDoc.numPages;
+    els.slider.max = String(reader.total);
+    els.total.textContent = String(reader.total);
+    readerShowPage(1);
+  } catch (e) {
+    _readerSpin(false);
+    els.error.style.display = 'block';
+    els.error.textContent = 'Could not open file: ' + e.message;
+  }
+}
+
+function _readerSpin(on) {
+  document.getElementById('readerSpinner').classList.toggle('show', !!on);
+}
+
+function readerShowPage(n) {
+  const els = _readerEls();
+  n = Math.max(1, Math.min(reader.total || 9999, n));
+  reader.page = n;
+  els.slider.value = String(n);
+  els.pageInput.value = String(n);
+  els.prev.disabled = n <= 1;
+  els.next.disabled = !!reader.total && n >= reader.total;
+  els.error.style.display = 'none';
+
+  if (reader.mode === 'img') {
+    _readerSpin(true);
+    els.canvas.style.display = 'none';
+    const img = els.img;
+    img.onload = () => { _readerSpin(false); img.style.display = 'block'; };
+    img.onerror = () => { _readerSpin(false); img.style.display='none'; els.error.style.display='block'; els.error.textContent='Page unavailable.'; };
+    img.src = `/api/books/${reader.bookId}/page/${n}`;
+    // warm the next page in the browser's own HTTP cache — single small
+    // image, no extra app-side memory held
+    if (n + 1 <= reader.total) { const pre = new Image(); pre.src = `/api/books/${reader.bookId}/page/${n+1}`; }
+  } else if (reader.mode === 'pdf' && reader.pdfDoc) {
+    renderPdfPage(n);
+  }
+}
+
+async function renderPdfPage(n) {
+  if (reader.rendering) return;
+  reader.rendering = true;
+  _readerSpin(true);
+  const els = _readerEls();
+  try {
+    const page = await reader.pdfDoc.getPage(n);
+    const canvas = els.canvas;
+    const ctx = canvas.getContext('2d');
+    const wrap = document.getElementById('readerPageWrap');
+    const vp0 = page.getViewport({ scale: 1 });
+    const scale = Math.min(2.2, (wrap.clientWidth - 16) / vp0.width, (wrap.clientHeight - 16) / vp0.height);
+    const viewport = page.getViewport({ scale: Math.max(0.3, scale) });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    els.img.style.display = 'none';
+    canvas.style.display = 'block';
+  } catch (e) {
+    els.error.style.display = 'block';
+    els.error.textContent = 'Could not render this page.';
+  } finally {
+    _readerSpin(false);
+    reader.rendering = false;
+  }
+}
+
+function closeReader() {
+  const els = _readerEls();
+  els.overlay.classList.remove('show');
+  document.body.style.overflow = '';
+  // free everything immediately — don't wait for GC
+  els.img.src = '';
+  if (reader.pdfDoc) { try { reader.pdfDoc.destroy(); } catch {} }
+  reader.pdfDoc = null; reader.mode = null; reader.bookId = null; reader.jobId = null;
+}
+
+document.getElementById('readerClose').onclick = closeReader;
+document.getElementById('readerPrev').onclick = () => readerShowPage(reader.page - 1);
+document.getElementById('readerNext').onclick = () => readerShowPage(reader.page + 1);
+document.getElementById('readerSlider').oninput = (e) => readerShowPage(+e.target.value);
+document.getElementById('readerPageInput').onchange = (e) => readerShowPage(+e.target.value);
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('readerOverlay').classList.contains('show')) return;
+  if (e.key === 'Escape') closeReader();
+  else if (e.key === 'ArrowLeft') readerShowPage(reader.page - 1);
+  else if (e.key === 'ArrowRight') readerShowPage(reader.page + 1);
+});
+// swipe support
+(function() {
+  const wrap = document.getElementById('readerPageWrap');
+  let sx = null;
+  wrap.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
+  wrap.addEventListener('touchend', e => {
+    if (sx === null) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    if (Math.abs(dx) > 50) readerShowPage(reader.page + (dx < 0 ? 1 : -1));
+    sx = null;
+  }, { passive: true });
+})();
 
 renderMain();
 health();
