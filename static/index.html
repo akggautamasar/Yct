@@ -609,48 +609,25 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .reader-preview-btn { margin-top: 12px; width: 100%; font-size: 13px; padding: 10px 16px; }
 
 .reader-overlay {
-  position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
-  background: radial-gradient(circle at 50% 30%, #0d0b29 0%, #03040c 75%);
+  position: fixed; inset: 0; z-index: 90;
+  background: #03040c;
   opacity: 0; pointer-events: none; visibility: hidden;
   transition: opacity 0.3s ease;
+  overflow: hidden;
 }
 .reader-overlay.show { opacity: 1; pointer-events: auto; visibility: visible; }
-[data-theme="light"] .reader-overlay { background: radial-gradient(circle at 50% 30%, #e3eafc 0%, #cfe0f0 80%); }
 
-.reader-top {
-  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 10px 14px; border-bottom: 1px solid var(--glass-border);
-  background: var(--surface); backdrop-filter: blur(var(--glass-blur));
+/* The image stage fills the ENTIRE overlay — top bar, bottom bar, and the
+   nav arrows float on top of it as translucent chrome, instead of eating
+   into the space available to the page itself. */
+.reader-stage {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; margin: 0; overflow: hidden;
 }
-.reader-title {
-  font-family: var(--font-display); font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
-  color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  flex: 1 1 auto; min-width: 0;
-}
-.reader-toolbar { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.reader-tool {
-  width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border2);
-  background: var(--card); color: var(--acc); font-size: 16px; font-weight: 700; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; transition: all 0.2s ease;
-}
-.reader-tool:hover { border-color: var(--acc); box-shadow: 0 0 10px var(--acc-glow); transform: translateY(-1px); }
-.reader-tool.active { color: var(--acc2); border-color: var(--acc2); }
-.reader-zoom-lvl {
-  font-family: var(--font-mono); font-size: 11px; color: var(--txt3); width: 42px; text-align: center;
-  user-select: none;
-}
-.reader-close {
-  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border2);
-  background: var(--card); color: var(--txt2); font-size: 18px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-  transition: all 0.25s ease;
-}
-.reader-close:hover { color: var(--err); border-color: var(--err); box-shadow: 0 0 12px rgba(255,56,96,0.4); transform: rotate(90deg); }
-
-.reader-stage { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px; min-height: 0; overflow: hidden; }
 .reader-page-wrap {
-  flex: 1; height: 100%; display: flex; align-items: center; justify-content: center;
-  position: relative; min-width: 0; overflow: hidden; touch-action: none;
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  position: relative; overflow: hidden; touch-action: none;
 }
 .reader-zoom-wrap {
   display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
@@ -660,58 +637,106 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .reader-zoom-wrap.panning { transition: none; }
 .reader-zoom-wrap.snap { transition: transform 0.25s cubic-bezier(0.4,0,0.2,1); }
 .reader-page-img, .reader-page-canvas {
-  max-width: 100%; max-height: 100%; object-fit: contain;
-  border-radius: 6px; box-shadow: 0 0 40px rgba(0,0,0,0.5), 0 0 0 1px var(--border);
+  max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain;
+  box-shadow: 0 0 40px rgba(0,0,0,0.5);
   background: #fff; user-select: none; -webkit-user-drag: none;
 }
 .reader-spinner {
   position: absolute; font-size: 30px; color: var(--acc); filter: drop-shadow(0 0 10px var(--acc-glow));
-  display: none;
+  display: none; z-index: 2;
 }
 .reader-spinner.show { display: block; }
 .reader-error {
-  color: var(--txt3); font-size: 14px; text-align: center; padding: 20px;
+  color: #aab8c2; font-size: 14px; text-align: center; padding: 20px; z-index: 2;
 }
-.reader-nav {
-  flex-shrink: 0; width: 44px; height: 44px; border-radius: 50%;
-  border: 1px solid var(--border2); background: var(--card); color: var(--acc);
-  font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
-}
-.reader-nav:hover:not(:disabled) { border-color: var(--acc); box-shadow: 0 0 14px var(--acc-glow); transform: scale(1.08); }
-.reader-nav:disabled { opacity: 0.3; cursor: not-allowed; }
 
+/* Floating top bar */
+.reader-top {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 6;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 14px; padding-top: calc(12px + env(safe-area-inset-top));
+  background: linear-gradient(to bottom, rgba(3,4,12,0.75) 0%, rgba(3,4,12,0.35) 65%, transparent 100%);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.reader-title {
+  font-family: var(--font-display); font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+  color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto; min-width: 0; text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.reader-toolbar { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.reader-tool {
+  width: 32px; height: 32px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(20,24,40,0.55); color: var(--acc); font-size: 16px; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all 0.2s ease;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.reader-tool:hover { border-color: var(--acc); box-shadow: 0 0 10px var(--acc-glow); transform: translateY(-1px); }
+.reader-tool.active { color: var(--acc2); border-color: var(--acc2); }
+.reader-zoom-lvl {
+  font-family: var(--font-mono); font-size: 11px; color: #cdd8e6; width: 42px; text-align: center;
+  user-select: none; text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.reader-close {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(20,24,40,0.55); color: #e3e8ef; font-size: 18px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: all 0.25s ease; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.reader-close:hover { color: var(--err); border-color: var(--err); box-shadow: 0 0 12px rgba(255,56,96,0.4); transform: rotate(90deg); }
+
+/* Nav arrows float over the image at the edges instead of squeezing it */
+.reader-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 5;
+  width: 42px; height: 42px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.25); background: rgba(20,24,40,0.5); color: var(--acc);
+  font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.25s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.reader-nav.prev { left: 10px; }
+.reader-nav.next { right: 10px; }
+.reader-nav:hover:not(:disabled) { border-color: var(--acc); box-shadow: 0 0 14px var(--acc-glow); transform: translateY(-50%) scale(1.08); }
+.reader-nav:disabled { opacity: 0.25; cursor: not-allowed; }
+
+/* Floating bottom bar */
 .reader-bottom {
-  flex-shrink: 0; display: flex; align-items: center; gap: 16px;
+  position: absolute; bottom: 0; left: 0; right: 0; z-index: 6;
+  display: flex; align-items: center; gap: 16px;
   padding: 12px 20px calc(14px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--glass-border); background: var(--surface);
-  backdrop-filter: blur(var(--glass-blur));
+  background: linear-gradient(to top, rgba(3,4,12,0.75) 0%, rgba(3,4,12,0.35) 65%, transparent 100%);
+  transition: opacity 0.25s ease, transform 0.25s ease;
 }
 .reader-bottom input[type=range] {
   flex: 1; accent-color: var(--acc); height: 4px; cursor: pointer;
 }
 .reader-pageno {
   flex-shrink: 0; display: flex; align-items: center; gap: 4px;
-  font-family: var(--font-mono); font-size: 13px; color: var(--txt2); white-space: nowrap;
+  font-family: var(--font-mono); font-size: 13px; color: #e3e8ef; white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
 .reader-pageno input {
   width: 52px; padding: 6px 8px; text-align: center; font-family: var(--font-mono);
+  background: rgba(20,24,40,0.55); border: 1px solid rgba(255,255,255,0.25); color: #fff;
 }
+
+/* Tap-to-hide chrome — maximizes the page on screen. Tap the page again to
+   bring the bars back; double-tap still zooms (handled in JS). */
+.reader-overlay.controls-hidden .reader-top,
+.reader-overlay.controls-hidden .reader-bottom,
+.reader-overlay.controls-hidden .reader-nav {
+  opacity: 0; pointer-events: none;
+}
+.reader-overlay.controls-hidden .reader-top { transform: translateY(-100%); }
+.reader-overlay.controls-hidden .reader-bottom { transform: translateY(100%); }
 
 /* True OS-level fullscreen via the Fullscreen API */
-.reader-overlay:fullscreen,
-.reader-overlay:-webkit-full-screen {
-  width: 100vw; height: 100vh; background: #03040c;
-}
-.reader-overlay:fullscreen .reader-nav,
-.reader-overlay:-webkit-full-screen .reader-nav { width: 52px; height: 52px; font-size: 19px; }
+.reader-overlay:fullscreen, .reader-overlay:-webkit-full-screen { background: #03040c; }
 
 @media (max-width: 768px) {
-  .reader-title { max-width: 34vw; font-size: 11.5px; }
+  .reader-title { max-width: 38vw; font-size: 11.5px; }
   .reader-tool { width: 28px; height: 28px; font-size: 14px; }
   .reader-zoom-lvl { display: none; }
-  .reader-nav { width: 38px; height: 38px; font-size: 14px; }
-  .reader-stage { padding: 6px; gap: 4px; }
+  .reader-nav { width: 36px; height: 36px; font-size: 13px; }
 }
 
 /* Custom Scrollbars */
@@ -1426,6 +1451,7 @@ function openPreviewReader() {
   els.canvas.style.display = 'none';
   els.error.style.display = 'none';
   _resetZoom(false);
+  els.overlay.classList.remove('controls-hidden');
   els.overlay.classList.add('show');
   document.body.style.overflow = 'hidden';
   readerShowPage(1);
@@ -1442,6 +1468,7 @@ async function openPdfReader(jid, title) {
   els.img.style.display = 'none';
   els.error.style.display = 'none';
   _resetZoom(false);
+  els.overlay.classList.remove('controls-hidden');
   els.overlay.classList.add('show');
   document.body.style.overflow = 'hidden';
   _readerSpin(true);
@@ -1538,6 +1565,7 @@ document.addEventListener('fullscreenchange', () => {
 function closeReader() {
   const els = _readerEls();
   els.overlay.classList.remove('show');
+  els.overlay.classList.remove('controls-hidden');
   document.body.style.overflow = '';
   if (document.fullscreenElement === els.overlay) {
     try { document.exitFullscreen(); } catch {}
@@ -1547,6 +1575,10 @@ function closeReader() {
   if (reader.pdfDoc) { try { reader.pdfDoc.destroy(); } catch {} }
   reader.pdfDoc = null; reader.mode = null; reader.bookId = null; reader.jobId = null;
   _resetZoom(false);
+}
+
+function toggleReaderControls() {
+  document.getElementById('readerOverlay').classList.toggle('controls-hidden');
 }
 
 document.getElementById('readerClose').onclick = closeReader;
@@ -1626,10 +1658,15 @@ document.addEventListener('keydown', (e) => {
       } else if (!moved) {
         const now = Date.now();
         if (now - zoom.lastTapTime < 320) {
-          // double-tap: zoom in centered roughly where tapped
+          // double-tap: zoom in, and cancel the pending single-tap toggle
+          clearTimeout(zoom._tapTimer);
+          zoom.lastTapTime = 0;
           zoom.scale = 2.2; _clampPan(); _applyZoom(true);
+        } else {
+          zoom.lastTapTime = now;
+          clearTimeout(zoom._tapTimer);
+          zoom._tapTimer = setTimeout(toggleReaderControls, 280);
         }
-        zoom.lastTapTime = now;
       }
     }
     swipeStartX = null;
@@ -1642,7 +1679,7 @@ document.addEventListener('keydown', (e) => {
     readerZoomBy(e.deltaY < 0 ? 0.25 : -0.25);
   }, { passive: false });
 
-  let dragging = false, dragStartX = 0, dragStartY = 0, dragPanX = 0, dragPanY = 0;
+  let dragging = false, dragStartX = 0, dragStartY = 0, dragPanX = 0, dragPanY = 0, wasDragging = false;
   wrap.addEventListener('mousedown', (e) => {
     if (zoom.scale <= 1) return;
     dragging = true;
@@ -1652,12 +1689,21 @@ document.addEventListener('keydown', (e) => {
   });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
+    wasDragging = true;
     zoom.x = dragPanX + (e.clientX - dragStartX);
     zoom.y = dragPanY + (e.clientY - dragStartY);
     _clampPan();
     _applyZoom(false);
   });
-  window.addEventListener('mouseup', () => { dragging = false; if (zoom.scale > 1) wrap.style.cursor = 'grab'; });
+  window.addEventListener('mouseup', () => {
+    dragging = false;
+    if (zoom.scale > 1) wrap.style.cursor = 'grab';
+    setTimeout(() => { wasDragging = false; }, 0);
+  });
+  wrap.addEventListener('click', () => {
+    if (wasDragging) return;
+    toggleReaderControls();
+  });
   wrap.addEventListener('dblclick', () => {
     if (zoom.scale > 1) _resetZoom(true);
     else { zoom.scale = 2.2; _clampPan(); _applyZoom(true); }
