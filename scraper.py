@@ -188,6 +188,32 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
     return None
 
 
+async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
+    """Fetch one page straight into memory — never touches disk. Used by the
+    in-browser preview reader so users can flip through a book before
+    committing to a full download (keeps Render's free-tier storage/RAM
+    untouched: only the single page currently being viewed is ever held)."""
+    c = await get_client()
+    url = f"{config.BASE_URL}/getPage/{book_id}/{page}"
+    ref = {"Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
+    for attempt in range(1, config.PAGE_RETRY + 1):
+        try:
+            resp = await c.get(url, headers={**config.HEADERS, **ref})
+            if resp.status_code in (429, 503):
+                await asyncio.sleep(min(15 * attempt, 90))
+                continue
+            if resp.status_code != 200:
+                await asyncio.sleep(min(2 ** attempt, 20))
+                continue
+            decoded = _decode_page(resp.content, resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else "")
+            if decoded:
+                return decoded
+            await asyncio.sleep(min(2 ** attempt, 10))
+        except Exception:
+            await asyncio.sleep(min(2 ** attempt, 15))
+    return None
+
+
 async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]:
     """Download one page to folder. Returns (page, status)."""
     import os

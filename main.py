@@ -5,10 +5,13 @@ Routes:
   POST /login                       -> submit site password, sets auth cookie
   GET  /api/categories              -> list categories
   GET  /api/books?cat=ID            -> list books in a category
+  GET  /api/pages?book_id=ID        -> total page count for a book
+  GET  /api/books/{id}/page/{n}     -> stream one page image (in-browser preview, no disk)
   POST /api/download                -> queue a download job
   GET  /api/jobs                    -> all jobs
   GET  /api/jobs/{id}               -> one job's status
   GET  /api/jobs/{id}/download/{n}  -> download a finished PDF (browser)
+  GET  /api/jobs/{id}/read          -> open the ready PDF inline (in-browser reader)
   POST /api/jobs/{id}/confirm       -> confirm a downloaded part, advance to next
   DELETE /api/jobs/{id}             -> cancel/delete a job + wipe its files on disk
   POST /tg/{secret}                 -> Telegram webhook
@@ -20,7 +23,7 @@ import hmac
 import hashlib
 import asyncio
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import config
@@ -90,7 +93,7 @@ async def password_gate(request: Request, call_next):
     if request.cookies.get(COOKIE_NAME) == _auth_token():
         return await call_next(request)
     if request.method == "GET" and "text/html" in (request.headers.get("accept") or ""):
-        return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", ""), status_code=401)
+        return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", ""), status_code=401, headers=_NO_CACHE_HEADERS)
     return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
 
@@ -104,7 +107,7 @@ async def login(request: Request):
                          httponly=True, samesite="lax")
         return resp
     err = '<div class="err">Incorrect password — try again.</div>'
-    return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", err), status_code=401)
+    return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", err), status_code=401, headers=_NO_CACHE_HEADERS)
 
 
 @app.on_event("startup")
@@ -137,14 +140,20 @@ async def ping():
     return {"status": "alive"}
 
 
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def index(request: Request):
     if request.method == "HEAD":
-        return HTMLResponse(content="", status_code=200)
+        return HTMLResponse(content="", status_code=200, headers=_NO_CACHE_HEADERS)
     fpath = os.path.join(HERE, "static", "index.html")
     if os.path.exists(fpath):
-        return FileResponse(fpath)
-    return HTMLResponse("<h1>YCT Downloader</h1><p>UI file missing.</p>")
+        return FileResponse(fpath, headers=_NO_CACHE_HEADERS)
+    return HTMLResponse("<h1>YCT Downloader</h1><p>UI file missing.</p>", headers=_NO_CACHE_HEADERS)
 
 
 # ---------------- REST API ----------------
@@ -185,6 +194,72 @@ async def api_pages(book_id: int):
         raise HTTPException(502, "login failed")
     total = await scraper.get_total_pages(book_id)
     return {"book_id": book_id, "total_pages": total}
+
+
+# ---------------- In-browser page preview (no disk write, no full job) ----------------
+# A tiny bounded cache so flipping back-and-forth doesn't re-hit YCT every
+# time, but it can never grow unbounded — at most _PAGE_CACHE_MAX pages
+# (~a few MB) live in RAM at once, regardless of how many books are browsed.
+_PAGE_CACHE: dict[tuple[int, int], tuple[bytes, str]] = {}
+_PAGE_CACHE_ORDER: list[tuple[int, int]] = []
+_PAGE_CACHE_MAX = 12
+
+
+def _cache_page(key: tuple[int, int], value: tuple[bytes, str]):
+    if key in _PAGE_CACHE:
+        try: _PAGE_CACHE_ORDER.remove(key)
+        except ValueError: pass
+    _PAGE_CACHE[key] = value
+    _PAGE_CACHE_ORDER.append(key)
+    while len(_PAGE_CACHE_ORDER) > _PAGE_CACHE_MAX:
+        oldest = _PAGE_CACHE_ORDER.pop(0)
+        _PAGE_CACHE.pop(oldest, None)
+
+
+@app.get("/api/books/{book_id}/page/{page}")
+async def api_book_page(book_id: int, page: int):
+    """Stream a single page image straight from YCT — nothing is ever
+    written to disk and at most a handful of pages sit in memory, so
+    previewing a 500-page book costs the same RAM as previewing a 5-page
+    one."""
+    key = (book_id, page)
+    cached = _PAGE_CACHE.get(key)
+    if cached:
+        data, ext = cached
+    else:
+        if not await scraper.login():
+            raise HTTPException(502, "login failed")
+        result = await scraper.fetch_page_bytes(book_id, page)
+        if not result:
+            raise HTTPException(404, "page not available")
+        data, ext = result
+        _cache_page(key, (data, ext))
+    media = "image/png" if ext == "png" else "image/jpeg"
+    return Response(content=data, media_type=media,
+                     headers={"Cache-Control": "private, max-age=900"})
+
+
+@app.get("/api/jobs/{jid}/read")
+async def api_job_read(jid: str):
+    """Open the currently-ready PDF inline (for the in-browser reader)
+    instead of forcing a download. Doesn't touch the consumed/_downloading
+    flags — reading is independent of the download/confirm flow, and the
+    file is only ever deleted when the user taps 'Done'."""
+    j = jobs.get_job(jid)
+    if not j:
+        raise HTTPException(404, "job not found")
+    cp = j.get("current_part")
+    if not cp:
+        raise HTTPException(404, "no part ready yet")
+    path = cp.get("path", "")
+    if not path or not os.path.exists(path):
+        raise HTTPException(410, "file not available")
+    filename = cp["name"]
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 class DownloadReq(BaseModel):
