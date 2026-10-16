@@ -1168,7 +1168,7 @@ function renderBooks(books, categoryId) {
   container.innerHTML = filtered.map(book => {
     const cover = String(book.cover || '');
     const coverHtml = cover
-      ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.outerHTML=\'<div class=\\\'book-icon-fallback\\\'>📚</div>\'"/>'
+      ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/>'
       : '<div class="book-icon-fallback">📚</div>';
     return '<button type="button" class="book-item" data-id="' + Number(book.book_id) +
       '" data-name="' + encodeURIComponent(book.name || '') + '" data-cover="' + encodeURIComponent(cover) +
@@ -1176,6 +1176,14 @@ function renderBooks(books, categoryId) {
       '</div><div class="sub">ID: ' + Number(book.book_id) + '</div></div></button>';
   }).join('');
   container.querySelectorAll('.book-item').forEach(el => { el.onclick = () => selectBook(el); });
+  container.querySelectorAll('.book-cover-img').forEach(img => {
+    img.addEventListener('error', () => {
+      const fallback = document.createElement('div');
+      fallback.className = 'book-icon-fallback';
+      fallback.textContent = '📚';
+      img.replaceWith(fallback);
+    }, { once: true });
+  });
 }
 
 async function loadCats() {
@@ -1203,6 +1211,8 @@ async function refreshCats(showError, forceRefresh = false) {
     select.innerHTML = categories.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
     if (categories.some(item => String(item.id) === previous)) select.value = previous;
     select.disabled = false;
+    // Populate the first category on initial visit without requiring an extra click.
+    if (!activeBookCategory && select.value) loadBooks(false);
   } catch (error) {
     if (showError && !categoryData.length) {
       select.innerHTML = '<option value="">Catalogue unavailable — retry</option>';
