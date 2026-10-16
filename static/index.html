@@ -1636,7 +1636,10 @@ async function renderPdfPage(n) {
       els.error.textContent = 'Could not render this page.';
     }
   } finally {
-    if (token === reader.renderToken) _readerSpin(false);
+    if (token === reader.renderToken) {
+      _readerSpin(false);
+      reader.renderTask = null;
+    }
   }
 }
 
@@ -1670,6 +1673,7 @@ function closeReader() {
   els.img.src = '';
   reader.renderToken++;
   if (reader.renderTask) { try { reader.renderTask.cancel(); } catch {} }
+  reader.renderTask = null;
   if (reader.pdfTask) { try { reader.pdfTask.destroy(); } catch {} }
   if (reader.pdfDoc) { try { reader.pdfDoc.destroy(); } catch {} }
   reader.renderTask = null; reader.pdfTask = null;
@@ -1822,8 +1826,14 @@ $('#bookSearch').addEventListener('input', () => {
 $('#refreshCatalog').addEventListener('click', async () => {
   const button = $('#refreshCatalog');
   button.disabled = true;
-  try { await refreshCats(true, true); }
-  finally {
+  const previousCategory = $('#cat').value;
+  try {
+    await refreshCats(true, true);
+    // Keep the same category selected when it still exists.
+    if (previousCategory && [...$('#cat').options].some(option => option.value === previousCategory)) {
+      $('#cat').value = previousCategory;
+    }
+  } finally {
     await loadBooks(true);
     button.disabled = false;
   }
