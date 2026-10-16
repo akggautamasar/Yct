@@ -249,6 +249,15 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     return page, "failed"
 
 
+async def close_client():
+    """Close the shared async client during graceful shutdown/redeploy."""
+    global _client, _session_cookie
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+    _session_cookie = None
+
+
 async def download_pages(book_id: int, pages: list[int], folder: str,
                          on_progress=None) -> tuple[int, int, list[int]]:
     """Download pages with bounded concurrency. Returns (ok, skip, failed_list)."""
