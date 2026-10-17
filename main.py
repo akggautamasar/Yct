@@ -237,24 +237,41 @@ async def api_categories(refresh: bool = False):
 
 
 @app.get("/api/books")
-async def api_books(cat: int, refresh: bool = False):
-    async def produce():
-        await _ensure_upstream_login()
-        raw_books = await scraper.get_books_in_category(cat)
-        semaphore = asyncio.Semaphore(4)
+async def api_books(cat: int | None = None, refresh: bool = False, all: bool = False):
+    async def resolve_category(category_id: int):
+        async def produce():
+            await _ensure_upstream_login()
+            raw_books = await scraper.get_books_in_category(category_id)
+            semaphore = asyncio.Semaphore(4)
 
-        async def resolve(book):
-            async with semaphore:
-                name, book_id = await scraper.get_book_details(book["detail_id"])
-            if not book_id:
-                return None
-            return {"detail_id": book["detail_id"], "book_id": book_id,
-                    "name": name, "cover": book.get("cover", "")}
+            async def resolve(book):
+                async with semaphore:
+                    name, book_id = await scraper.get_book_details(book["detail_id"])
+                if not book_id:
+                    return None
+                return {"detail_id": book["detail_id"], "book_id": book_id,
+                        "name": name, "cover": book.get("cover", ""),
+                        "category_id": category_id}
+            rows = await asyncio.gather(*(resolve(book) for book in raw_books))
+            return [row for row in rows if row]
+        value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"], produce)
+        return [dict(row) for row in value]
 
-        rows = await asyncio.gather(*(resolve(book) for book in raw_books))
-        return [row for row in rows if row]
-    value = await _cached_api_value(("books", int(cat)), 0 if refresh else _CACHE_TTL["books"], produce)
-    return [dict(row) for row in value]
+    await _ensure_upstream_login()
+    if all or cat is None:
+        categories = await _cached_api_value(
+            ("category_map",), 0 if refresh else _CACHE_TTL["categories"],
+            lambda: scraper.get_categories()
+        )
+        merged = []
+        seen = set()
+        for category_id in sorted(categories):
+            for book in await resolve_category(int(category_id)):
+                if book["book_id"] not in seen:
+                    seen.add(book["book_id"])
+                    merged.append(book)
+        return merged
+    return await resolve_category(int(cat))
 
 
 @app.get("/api/pages")
@@ -385,6 +402,65 @@ async def api_job_read(jid: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+
+
+
+class CategoryArchiveReq(BaseModel):
+    category_name: str = "Selected category"
+    books: list[dict]
+    max_books: int = 5000
+
+
+@app.post("/api/category-download")
+async def api_category_download(req: CategoryArchiveReq):
+    if not req.books:
+        raise HTTPException(400, "No books are loaded for this category")
+    if len(req.books) > min(req.max_books, 5000):
+        raise HTTPException(413, "Too many books in one archive; choose a smaller category")
+    books = []
+    seen = set()
+    for item in req.books:
+        try:
+            book_id = int(item.get("book_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if book_id > 0 and book_id not in seen:
+            seen.add(book_id)
+            books.append({"book_id": book_id, "name": str(item.get("name") or f"Book {book_id}")[:180],
+                          "total_pages": item.get("total_pages")})
+    if not books:
+        raise HTTPException(400, "No valid books were provided")
+    batch_id = jobs.start_category_archive(req.category_name[:120], books)
+    return {"job_id": batch_id, "total_books": len(books)}
+
+
+@app.get("/api/category-download/{batch_id}")
+async def api_category_download_status(batch_id: str):
+    status = jobs.get_category_archive(batch_id)
+    if not status:
+        raise HTTPException(404, "Category download job not found")
+    return status
+
+
+@app.get("/api/category-download/{batch_id}/file")
+async def api_category_download_file(batch_id: str):
+    path = jobs.category_archive_path(batch_id)
+    if not path:
+        raise HTTPException(409, "Archive is not ready yet")
+    filename = _safe_job_filename(f"YCT_{batch_id}.zip")
+    return FileResponse(path, media_type="application/zip", filename=filename)
+
+
+@app.delete("/api/category-download/{batch_id}")
+async def api_category_download_cancel(batch_id: str):
+    if not jobs.cancel_category_archive(batch_id):
+        raise HTTPException(404, "Category download job not found")
+    return {"ok": True}
+
+
+def _safe_job_filename(value: str) -> str:
+    import re
+    return re.sub(r'[^A-Za-z0-9._ -]+', '_', value)[:120] or "YCT_books.zip"
 
 
 class DownloadReq(BaseModel):

@@ -18,6 +18,7 @@ import shutil
 import asyncio
 import time
 import gc
+import zipfile
 
 GATE_TIMEOUT_SECONDS = 30 * 60   # auto-advance after 30 min if user vanishes
 
@@ -345,6 +346,133 @@ async def _process(jid: str):
         job["current_part"] = None
         if chat:
             await tg.send_message(f"<b>✗ Failed</b>\n{title}\n{str(e)[:200]}", chat)
+
+
+
+# Category archive jobs are deliberately sequential: one book and one bounded
+# page batch at a time, with PDFs written directly into a ZIP on ephemeral disk.
+BATCH_JOBS: dict[str, dict] = {}
+BATCH_DIR = os.path.join(config.WORK_DIR, "category_archives")
+os.makedirs(BATCH_DIR, exist_ok=True)
+
+
+def start_category_archive(category_name: str, books: list[dict]) -> str:
+    batch_id = uuid.uuid4().hex[:10]
+    archive_path = os.path.join(BATCH_DIR, f"yct_{batch_id}.zip")
+    job = {
+        "id": batch_id, "title": category_name or "All categories",
+        "status": "queued", "done_books": 0, "total_books": len(books),
+        "done_pages": 0, "total_pages": 0, "error": None,
+        "created_at": int(time.time()), "path": archive_path,
+        "cancelled": False,
+    }
+    BATCH_JOBS[batch_id] = job
+    asyncio.create_task(_process_category_archive(batch_id, [dict(b) for b in books]))
+    return batch_id
+
+
+def get_category_archive(batch_id: str) -> dict | None:
+    job = BATCH_JOBS.get(batch_id)
+    if not job:
+        return None
+    return {k: v for k, v in job.items() if k not in ("path", "cancelled")}
+
+
+def cancel_category_archive(batch_id: str) -> bool:
+    job = BATCH_JOBS.get(batch_id)
+    if not job:
+        return False
+    job["cancelled"] = True
+    job["status"] = "cancelling"
+    return True
+
+
+def category_archive_path(batch_id: str) -> str | None:
+    job = BATCH_JOBS.get(batch_id)
+    if not job or job.get("status") != "done":
+        return None
+    path = job.get("path")
+    return path if path and os.path.isfile(path) else None
+
+
+async def _process_category_archive(batch_id: str, books: list[dict]):
+    job = BATCH_JOBS[batch_id]
+    archive_path = job["path"]
+    safe_category = _safe_filename(job["title"], "YCT category")
+    try:
+        job["status"] = "logging_in"
+        if not await scraper.login():
+            raise RuntimeError("YCT login failed; check configured credentials")
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
+            for index, book in enumerate(books, 1):
+                if job["cancelled"]:
+                    raise asyncio.CancelledError()
+                book_id = int(book.get("book_id") or 0)
+                if book_id < 1:
+                    continue
+                title = _safe_filename(str(book.get("name") or f"Book {book_id}"), f"Book {book_id}")
+                job["status"] = f"book {index}/{len(books)}: {title}"
+                total_pages = book.get("total_pages")
+                if not total_pages:
+                    total_pages = await scraper.get_total_pages(book_id)
+                if not total_pages or total_pages < 1:
+                    job.setdefault("skipped_books", []).append(title)
+                    job["done_books"] = index
+                    continue
+                job["total_pages"] += int(total_pages)
+                if not await scraper.has_access(book_id):
+                    job.setdefault("skipped_books", []).append(title)
+                    job["done_books"] = index
+                    continue
+                chunk = max(1, config.CHUNK_PAGES)
+                for start in range(1, int(total_pages) + 1, chunk):
+                    if job["cancelled"]:
+                        raise asyncio.CancelledError()
+                    end = min(int(total_pages), start + chunk - 1)
+                    folder = os.path.join(config.WORK_DIR, f"batch_{batch_id}_{book_id}_{start}_{end}")
+                    os.makedirs(folder, exist_ok=True)
+                    try:
+                        pages = list(range(start, end + 1))
+                        ok, skipped, failed = await scraper.download_pages(book_id, pages, folder)
+                        if failed:
+                            ok2, skipped2, failed = await scraper.download_pages(book_id, failed, folder)
+                            ok += ok2
+                            skipped += skipped2
+                        job["done_pages"] += ok + skipped
+                        if not ok and failed:
+                            job.setdefault("skipped_parts", []).append(f"{title} pages {start}-{end}")
+                            continue
+                        pdf_name = f"{title}.pdf" if total_pages <= chunk else f"{title} (pages {start}-{end}).pdf"
+                        pdf_path = os.path.join(config.WORK_DIR, f"batch_{batch_id}_{book_id}_{start}_{end}.pdf")
+                        size_mb, _ = pdfbuilder.build(folder, pdf_path, False)
+                        if size_mb > 0 and os.path.isfile(pdf_path):
+                            archive.write(pdf_path, arcname=f"{index:04d} - {pdf_name}")
+                        else:
+                            job.setdefault("skipped_parts", []).append(f"{title} pages {start}-{end}")
+                        try:
+                            if os.path.exists(pdf_path): os.remove(pdf_path)
+                        except OSError:
+                            pass
+                    finally:
+                        shutil.rmtree(folder, ignore_errors=True)
+                    gc.collect()
+                job["done_books"] = index
+        if job["cancelled"]:
+            raise asyncio.CancelledError()
+        job["status"] = "done"
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
+        try:
+            if os.path.exists(archive_path): os.remove(archive_path)
+        except OSError:
+            pass
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)[:400]
+        try:
+            if os.path.exists(archive_path): os.remove(archive_path)
+        except OSError:
+            pass
 
 
 async def _worker():
