@@ -1166,7 +1166,8 @@ function renderBooks(books, categoryId) {
   activeBookCategory = String(categoryId);
   const query = ($('#bookSearch')?.value || '').trim().toLocaleLowerCase();
   const filtered = query
-    ? activeBooks.filter(book => (book.name || '').toLocaleLowerCase().includes(query) || String(book.book_id).includes(query))
+    ? activeBooks.filter(book => (book.name || '').toLocaleLowerCase().includes(query) ||
+        String(book.book_id).includes(query) || (book.category_name || '').toLocaleLowerCase().includes(query))
     : activeBooks;
   const container = $('#books');
   if (!filtered.length) {
@@ -1180,10 +1181,11 @@ function renderBooks(books, categoryId) {
     const coverHtml = cover
       ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/>'
       : '<div class="book-icon-fallback">📚</div>';
+    const categoryLabel = book.category_name ? '<div class="sub">' + safeText(book.category_name) + '</div>' : '';
     return '<button type="button" class="book-item" data-id="' + Number(book.book_id) +
       '" data-name="' + encodeURIComponent(book.name || '') + '" data-cover="' + encodeURIComponent(cover) +
       '">' + coverHtml + '<div class="info"><div class="name">' + safeText(book.name || ('Book ' + book.book_id)) +
-      '</div><div class="sub">ID: ' + Number(book.book_id) + '</div></div></button>';
+      '</div><div class="sub">ID: ' + Number(book.book_id) + '</div>' + categoryLabel + '</div></button>';
   }).join('');
   container.querySelectorAll('.book-item').forEach(el => { el.onclick = () => selectBook(el); });
   container.querySelectorAll('.book-cover-img').forEach(img => {
@@ -1201,7 +1203,7 @@ async function loadCats() {
   const cached = readLocalCache('categories');
   if (cached?.length) {
     categoryData = cached;
-    select.innerHTML = cached.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
+    select.innerHTML = '<option value="all">All categories</option>' + cached.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
     select.disabled = false;
     refreshCats(false);
   } else {
@@ -1218,7 +1220,7 @@ async function refreshCats(showError, forceRefresh = false) {
     categoryData = categories;
     writeLocalCache('categories', categories);
     const previous = select.value;
-    select.innerHTML = categories.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
+    select.innerHTML = '<option value="all">All categories</option>' + categories.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
     if (categories.some(item => String(item.id) === previous)) select.value = previous;
     select.disabled = false;
     // Populate the first category on initial visit without requiring an extra click.
@@ -1269,26 +1271,29 @@ async function loadBooks(forceRefresh = false) {
   const button = $('#loadBooks');
   button.disabled = true;
   button.innerHTML = '<span class="spin">&#8987;</span>';
-  const cached = forceRefresh ? null : readLocalCache('category.' + cat);
-  if (cached?.length) {
+  const cacheKey = cat === 'all' ? 'all-books' : 'category.' + cat;
+  const cached = forceRefresh ? null : readLocalCache(cacheKey);
+  if (Array.isArray(cached) && cached.length) {
     renderBooks(cached, cat);
     button.disabled = false;
     button.textContent = 'Reload';
-    refreshBooks(cat, requestId, false);
+    refreshBooks(cat, requestId, false, false);
     return;
   }
   showSkeletons();
-  $('#bookCount').textContent = 'Loading…';
+  $('#bookCount').textContent = cat === 'all' ? 'Loading all categories…' : 'Loading…';
   await refreshBooks(cat, requestId, true, forceRefresh);
 }
 async function refreshBooks(cat, requestId, showError, forceRefresh = false) {
   const button = $('#loadBooks');
   try {
-    const response = await api('/api/books?cat=' + encodeURIComponent(cat) + (forceRefresh ? '&refresh=true' : ''));
+    const response = await api('/api/books?' + (cat === 'all' ? 'all=true' : 'cat=' + encodeURIComponent(cat)) + (forceRefresh ? '&refresh=true' : ''));
     if (requestId !== bookLoadRequest || String($('#cat').value) !== String(cat)) return;
     if (!Array.isArray(response)) throw new Error('Invalid catalogue response');
-    writeLocalCache('category.' + cat, response);
-    renderBooks(response, cat);
+    const names = categoryData.reduce((map, item) => (map[String(item.id)] = item.name, map), {});
+    const decorated = response.map(book => ({...book, category_name: book.category_name || names[String(book.category_id)] || ''}));
+    writeLocalCache(cat === 'all' ? 'all-books' : 'category.' + cat, decorated);
+    renderBooks(decorated, cat);
   } catch (error) {
     if (requestId === bookLoadRequest && showError) {
       $('#books').innerHTML = '<div class="muted">Catalogue error: ' + safeText(error.message) + ' — tap Reload to retry.</div>';
