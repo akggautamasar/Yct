@@ -408,15 +408,20 @@ async def api_job_read(jid: str):
 class CategoryArchiveReq(BaseModel):
     category_name: str = "Selected category"
     books: list[dict]
-    max_books: int = 5000
+    max_books: int = 1000
 
 
 @app.post("/api/category-download")
 async def api_category_download(req: CategoryArchiveReq):
+    if not config.TG_TOKEN or not config.TG_CHAT_ID:
+        raise HTTPException(
+            503,
+            "Category export saves files to Telegram. Configure TG_TOKEN and TG_CHAT_ID on Render first.",
+        )
     if not req.books:
         raise HTTPException(400, "No books are loaded for this category")
-    if len(req.books) > min(req.max_books, 5000):
-        raise HTTPException(413, "Too many books in one archive; choose a smaller category")
+    if len(req.books) > min(req.max_books, 1000):
+        raise HTTPException(413, "Too many books in one request; choose a smaller category")
     books = []
     seen = set()
     for item in req.books:
@@ -426,41 +431,30 @@ async def api_category_download(req: CategoryArchiveReq):
             continue
         if book_id > 0 and book_id not in seen:
             seen.add(book_id)
-            books.append({"book_id": book_id, "name": str(item.get("name") or f"Book {book_id}")[:180],
-                          "total_pages": item.get("total_pages")})
+            books.append({
+                "book_id": book_id,
+                "name": str(item.get("name") or f"Book {book_id}")[:180],
+                "total_pages": item.get("total_pages"),
+            })
     if not books:
         raise HTTPException(400, "No valid books were provided")
     batch_id = jobs.start_category_archive(req.category_name[:120], books)
-    return {"job_id": batch_id, "total_books": len(books)}
+    return {"job_id": batch_id, "total_books": len(books), "destination": "Telegram"}
 
 
 @app.get("/api/category-download/{batch_id}")
 async def api_category_download_status(batch_id: str):
     status = jobs.get_category_archive(batch_id)
     if not status:
-        raise HTTPException(404, "Category download job not found")
+        raise HTTPException(404, "Category export job not found. Render may have restarted; check Telegram for files already uploaded.")
     return status
-
-
-@app.get("/api/category-download/{batch_id}/file")
-async def api_category_download_file(batch_id: str):
-    path = jobs.category_archive_path(batch_id)
-    if not path:
-        raise HTTPException(409, "Archive is not ready yet")
-    filename = _safe_job_filename(f"YCT_{batch_id}.zip")
-    return FileResponse(path, media_type="application/zip", filename=filename)
 
 
 @app.delete("/api/category-download/{batch_id}")
 async def api_category_download_cancel(batch_id: str):
     if not jobs.cancel_category_archive(batch_id):
-        raise HTTPException(404, "Category download job not found")
+        raise HTTPException(404, "Category export job not found or already finished")
     return {"ok": True}
-
-
-def _safe_job_filename(value: str) -> str:
-    import re
-    return re.sub(r'[^A-Za-z0-9._ -]+', '_', value)[:120] or "YCT_books.zip"
 
 
 class DownloadReq(BaseModel):
