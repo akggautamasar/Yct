@@ -10,6 +10,7 @@ FastAPI web app + Telegram bot for browsing the YCT publication catalogue, readi
 - **On-demand reader:** loads individual book pages, not the whole book, and uses a strict 8-page / 8 MiB in-memory page cache with a 15-minute TTL.
 - **Light polling:** active jobs refresh quickly; idle job lists are polled less frequently.
 - **Bounded upstream concurrency:** book details resolve with a small cap so browsing does not overwhelm the source website.
+- **Telegram category export:** sends one book/page-batch PDF at a time to Telegram, then immediately deletes temporary files. It does not create a category-wide ZIP or accumulate a library on Render.
 
 The server cache is intentionally process-local. Render free instances can restart at any time, and the app remains correct when the cache is empty.
 
@@ -27,7 +28,8 @@ Datacenter IPs can be blocked or throttled by source websites. If categories can
 - Single FastAPI service on Render.
 - Web UI at `/`.
 - Telegram webhook at `/tg/<secret>`.
-- In-memory async job queue; jobs run one at a time to limit memory usage.
+- In-memory async job queue; normal downloads and category exports share a resource lock so only one PDF-building task runs at a time.
+- Category export streams PDF parts directly to the configured Telegram chat/channel, with page batches capped at 40 pages. Render stores only the current temporary batch; completed files live in Telegram.
 - PDF scratch/output files use `/tmp`; treat it as ephemeral.
 - Completed PDFs may be sent to Telegram; Render local files are not permanent storage.
 
@@ -48,6 +50,7 @@ Datacenter IPs can be blocked or throttled by source websites. If categories can
 - Server caches clear on restart. Browser caching speeds up repeat visits on the same device.
 - Catalogue cache refresh is time-limited; use Refresh when the source catalogue changes.
 - Reader pages are streamed on demand; do not pre-download every book onto the Render instance. It is memory-limited and local files are ephemeral.
+- Category export requires `TG_TOKEN` and `TG_CHAT_ID`. It uploads each page-sized PDF batch directly to Telegram and removes local files after upload. An in-progress export cannot be guaranteed to survive a Render restart: job state is in memory, but already-uploaded Telegram files remain. Keep the page open when possible so status polling keeps the service active.
 - Large books are processed in bounded page batches to keep memory and disk usage down.
 - OCR may require operating-system Tesseract language packages; the lossless PDF path does not depend on OCR.
 
