@@ -470,6 +470,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                 job["status"] = f"downloading {index}/{len(books)} · pages {start}-{end}"
                 folder = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}")
                 pdf_path = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}.pdf")
+                pdf_parts = []
                 os.makedirs(folder, exist_ok=True)
                 try:
                     page_numbers = list(range(start, end + 1))
@@ -481,14 +482,16 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                     job["done_pages"] += ok + skipped
                     if not ok and failed:
                         job["failed_parts"] += 1
-                        _category_skip(job, f"{title}: pages {start}-{end} could not be downloaded")
+                        if len(job["skipped_details"]) < 30:
+                            job["skipped_details"].append(f"{title}: pages {start}-{end} could not be downloaded")
                         continue
 
                     job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
                     size_mb, _ = pdfbuilder.build(folder, pdf_path, False)
                     if size_mb <= 0 or not os.path.isfile(pdf_path):
                         job["failed_parts"] += 1
-                        _category_skip(job, f"{title}: PDF build failed for pages {start}-{end}")
+                        if len(job["skipped_details"]) < 30:
+                            job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
                         continue
 
                     pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
@@ -515,6 +518,14 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             except OSError:
                                 pass
                 finally:
+                    # Also remove any remaining split files if an upload fails midway.
+                    for leftover in pdf_parts:
+                        if leftover != pdf_path:
+                            try:
+                                if os.path.exists(leftover):
+                                    os.remove(leftover)
+                            except OSError:
+                                pass
                     shutil.rmtree(folder, ignore_errors=True)
                     try:
                         if os.path.exists(pdf_path):
