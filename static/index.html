@@ -856,7 +856,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
         <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Fetch latest catalogue">↻</button>
       </div>
       <div class="category-download-tools">
-        <button class="btn btn-primary" id="downloadCategory" type="button">↓ Download category</button>
+        <button class="btn btn-primary" id="downloadCategory" type="button">↓ Send category to Telegram</button>
         <div class="category-download-status" id="categoryDownloadStatus" aria-live="polite"></div>
       </div>
       <div class="books-hd">
@@ -1840,7 +1840,7 @@ document.addEventListener('keydown', (e) => {
 })();
 
 
-const BATCH_STORAGE_KEY = 'yct.categoryDownload.active.v1';
+const BATCH_STORAGE_KEY = 'yct.categoryDownload.active.v2';
 let activeBatchId = null;
 let batchPollTimer = null;
 let batchPollBusy = false;
@@ -1853,40 +1853,46 @@ function startBatchPolling(id) {
   try { localStorage.setItem(BATCH_STORAGE_KEY, id); } catch {}
   pollCategoryDownload();
 }
+function clearBatchTracking() {
+  try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
+  activeBatchId = null;
+  $('#downloadCategory').disabled = false;
+}
 async function pollCategoryDownload() {
   if (!activeBatchId || batchPollBusy) return;
   batchPollBusy = true;
-  let nextDelay = 3000;
+  let nextDelay = 5000;
   try {
     const status = await api('/api/category-download/' + encodeURIComponent(activeBatchId));
     const done = Number(status.done_books || 0);
     const total = Number(status.total_books || 0);
     const pages = Number(status.done_pages || 0);
+    const parts = Number(status.uploaded_parts || 0);
     if (status.status === 'done') {
-      $('#categoryDownloadStatus').innerHTML =
-        'Archive ready. ' + done + '/' + total + ' books processed. <a href="/api/category-download/' +
-        encodeURIComponent(activeBatchId) + '/file">Download ZIP</a>';
-      $('#downloadCategory').disabled = false;
-      try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
-      activeBatchId = null;
+      categoryDownloadMessage('Complete · ' + done + '/' + total + ' books · ' + parts +
+        ' PDF file(s) saved to Telegram · skipped books: ' + (status.skipped_books || 0) +
+        '. Open your configured Telegram storage chat/channel to access them.');
+      clearBatchTracking();
     } else if (status.status === 'error') {
-      categoryDownloadMessage('Download failed: ' + (status.error || 'unknown error'));
-      $('#downloadCategory').disabled = false;
-      try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
-      activeBatchId = null;
+      categoryDownloadMessage('Stopped: ' + (status.error || 'unknown error') +
+        '. Files already uploaded are still in Telegram.');
+      clearBatchTracking();
     } else if (status.status === 'cancelled') {
-      categoryDownloadMessage('Category download cancelled.');
-      $('#downloadCategory').disabled = false;
-      try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
-      activeBatchId = null;
+      categoryDownloadMessage('Cancelled · ' + parts +
+        ' PDF file(s) already saved to Telegram. Those files remain available.');
+      clearBatchTracking();
     } else {
-      categoryDownloadMessage('Working in background · ' + done + '/' + total +
-        ' books · ' + pages + ' pages processed. You can minimize this page; keep the tab open.');
-      nextDelay = 4000;
+      const current = status.current_book ? ' · ' + status.current_book : '';
+      const pageText = status.current_pages ? ' · pages ' + status.current_pages : '';
+      categoryDownloadMessage('Sending to Telegram · ' + done + '/' + total +
+        ' books · ' + pages + '/' + (status.total_pages || '?') + ' pages · ' +
+        parts + ' PDF file(s) uploaded' + current + pageText +
+        '. You may minimize this page, but keep the tab open if possible; Render free instances can restart.');
+      nextDelay = 5000;
     }
   } catch (error) {
-    categoryDownloadMessage('Reconnecting to category download…');
-    nextDelay = 8000;
+    categoryDownloadMessage('Reconnecting… if Render restarted, files already sent remain in Telegram; start again after checking the channel.');
+    nextDelay = 10000;
   } finally {
     batchPollBusy = false;
     clearTimeout(batchPollTimer);
@@ -1895,23 +1901,24 @@ async function pollCategoryDownload() {
 }
 async function downloadSelectedCategory() {
   if (activeBatchId) {
-    categoryDownloadMessage('A category download is already running.');
+    categoryDownloadMessage('A category export is already running.');
     return;
   }
   const categoryId = $('#cat').value;
   const books = activeBooks || [];
   if (!books.length) {
-    categoryDownloadMessage('Load a category first, then start its download.');
+    categoryDownloadMessage('Load a category first, then start its export.');
     return;
   }
   const category = categoryId === 'all'
     ? 'All categories'
     : ($('#cat').selectedOptions[0]?.textContent || 'Selected category');
-  if (!confirm('Prepare a ZIP of ' + books.length + ' books from "' + category +
-      '"? Large categories can take a long time and use temporary Render storage.')) return;
+  if (!confirm('Send ' + books.length + ' books from "' + category +
+      '" to Telegram one book/page-part at a time? No large ZIP will be created on Render. ' +
+      'A free Render restart can stop the current run, but files already uploaded remain in Telegram.')) return;
   const button = $('#downloadCategory');
   button.disabled = true;
-  categoryDownloadMessage('Starting category download…');
+  categoryDownloadMessage('Starting Telegram export…');
   try {
     const response = await fetch('/api/category-download', {
       method: 'POST',
@@ -1919,8 +1926,8 @@ async function downloadSelectedCategory() {
       body: JSON.stringify({category_name: category, books})
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || 'Could not start download');
-    categoryDownloadMessage('Started. Preparing ' + data.total_books + ' books…');
+    if (!response.ok) throw new Error(data.detail || 'Could not start export');
+    categoryDownloadMessage('Started · preparing to send ' + data.total_books + ' books to Telegram…');
     startBatchPolling(data.job_id);
   } catch (error) {
     button.disabled = false;
