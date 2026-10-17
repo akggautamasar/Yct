@@ -810,6 +810,19 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   .particle { display: none; }
   .book-item { opacity: 1; animation: none; }
 }
+
+
+.category-download-tools { padding:8px 16px 10px; display:flex; flex-direction:column; gap:7px; flex-shrink:0; }
+#downloadCategory { width:100%; justify-content:center; }
+.category-download-status { font-size:12px; color:var(--muted); line-height:1.45; overflow-wrap:anywhere; }
+.category-download-status:empty { display:none; }
+.category-download-status a { color:var(--acc); font-weight:700; }
+.catalog-search { display:flex; gap:8px; padding:10px 16px 4px; flex-shrink:0; }
+.catalog-search input { min-width:0; flex:1; background:var(--surface-solid); }
+.catalog-search .btn { padding:8px 13px; flex-shrink:0; }
+.book-item { width:100%; text-align:left; color:inherit; font:inherit; cursor:pointer; }
+.book-item:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+.book-list { content-visibility:auto; contain-intrinsic-size:800px; }
 </style>
 </head>
 <body>
@@ -837,6 +850,14 @@ input[type=checkbox]:checked { transform: scale(1.1); }
       <div class="cat-bar">
         <select id="cat"><option>Loading&#8230;</option></select>
         <button class="btn btn-ghost" id="loadBooks">Load</button>
+      </div>
+      <div class="catalog-search">
+        <input id="bookSearch" type="search" placeholder="Search books by title or ID…" aria-label="Search books" autocomplete="off"/>
+        <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Fetch latest catalogue">↻</button>
+      </div>
+      <div class="category-download-tools">
+        <button class="btn btn-primary" id="downloadCategory" type="button">↓ Send category to Telegram</button>
+        <div class="category-download-status" id="categoryDownloadStatus" aria-live="polite"></div>
       </div>
       <div class="books-hd">
         <span>Available Books</span>
@@ -1114,30 +1135,100 @@ async function health() {
   }
 }
 
+const CATALOG_CACHE_PREFIX = 'yct.catalog.v2.';
+const CATALOG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+let categoryData = [];
+let activeBooks = [];
+let activeBookCategory = null;
+let bookLoadRequest = 0;
+
+function readLocalCache(key) {
+  try {
+    const raw = localStorage.getItem(CATALOG_CACHE_PREFIX + key);
+    if (!raw) return null;
+    const item = JSON.parse(raw);
+    if (!item || !item.savedAt || Date.now() - item.savedAt > CATALOG_CACHE_TTL_MS) {
+      localStorage.removeItem(CATALOG_CACHE_PREFIX + key);
+      return null;
+    }
+    return item.data;
+  } catch { return null; }
+}
+function writeLocalCache(key, data) {
+  try { localStorage.setItem(CATALOG_CACHE_PREFIX + key, JSON.stringify({ savedAt: Date.now(), data })); }
+  catch { /* localStorage limits/private mode must not break the reader */ }
+}
+function safeText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function renderBooks(books, categoryId) {
+  activeBooks = Array.isArray(books) ? books : [];
+  activeBookCategory = String(categoryId);
+  const query = ($('#bookSearch')?.value || '').trim().toLocaleLowerCase();
+  const filtered = query
+    ? activeBooks.filter(book => (book.name || '').toLocaleLowerCase().includes(query) ||
+        String(book.book_id).includes(query) || (book.category_name || '').toLocaleLowerCase().includes(query))
+    : activeBooks;
+  const container = $('#books');
+  if (!filtered.length) {
+    container.innerHTML = '<div class="muted">' + (query ? 'No books match your search.' : 'No books found.') + '</div>';
+    $('#bookCount').textContent = '0 books';
+    return;
+  }
+  $('#bookCount').textContent = query ? filtered.length + ' / ' + activeBooks.length + ' books' : activeBooks.length + ' books';
+  container.innerHTML = filtered.map(book => {
+    const cover = String(book.cover || '');
+    const coverHtml = cover
+      ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/>'
+      : '<div class="book-icon-fallback">📚</div>';
+    const categoryLabel = book.category_name ? '<div class="sub">' + safeText(book.category_name) + '</div>' : '';
+    return '<button type="button" class="book-item" data-id="' + Number(book.book_id) +
+      '" data-name="' + encodeURIComponent(book.name || '') + '" data-cover="' + encodeURIComponent(cover) +
+      '">' + coverHtml + '<div class="info"><div class="name">' + safeText(book.name || ('Book ' + book.book_id)) +
+      '</div><div class="sub">ID: ' + Number(book.book_id) + '</div>' + categoryLabel + '</div></button>';
+  }).join('');
+  container.querySelectorAll('.book-item').forEach(el => { el.onclick = () => selectBook(el); });
+  container.querySelectorAll('.book-cover-img').forEach(img => {
+    img.addEventListener('error', () => {
+      const fallback = document.createElement('div');
+      fallback.className = 'book-icon-fallback';
+      fallback.textContent = '📚';
+      img.replaceWith(fallback);
+    }, { once: true });
+  });
+}
+
 async function loadCats() {
-  const sel = $('#cat');
-  sel.innerHTML = '<option>Loading...</option>';
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(()=>ctrl.abort(), 35000);
-      const r = await fetch('/api/categories', {signal: ctrl.signal});
-      clearTimeout(timer);
-      if (!r.ok) {
-        const err = await r.json().catch(()=>({detail:'server error'}));
-        throw new Error(err.detail || r.status);
-      }
-      const cats = await r.json();
-      if (!cats.length) { sel.innerHTML='<option>No categories found</option>'; return; }
-      sel.innerHTML = cats.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-      return;
-    } catch(e) {
-      if (attempt < 5) {
-        sel.innerHTML=`<option>Retrying (${attempt}/5)...</option>`;
-        await new Promise(r=>setTimeout(r, 3000));
-      } else {
-        sel.innerHTML=`<option>Failed: ${e.message}</option>`;
-      }
+  const select = $('#cat');
+  const cached = readLocalCache('categories');
+  if (cached?.length) {
+    categoryData = cached;
+    select.innerHTML = '<option value="all">All categories</option>' + cached.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
+    select.disabled = false;
+    refreshCats(false);
+  } else {
+    select.innerHTML = '<option value="">Loading catalogue…</option>';
+    select.disabled = true;
+    await refreshCats(true);
+  }
+}
+async function refreshCats(showError, forceRefresh = false) {
+  const select = $('#cat');
+  try {
+    const categories = await api('/api/categories' + (forceRefresh ? '?refresh=true' : ''));
+    if (!Array.isArray(categories) || !categories.length) throw new Error('No categories returned');
+    categoryData = categories;
+    writeLocalCache('categories', categories);
+    const previous = select.value;
+    select.innerHTML = '<option value="all">All categories</option>' + categories.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
+    if (categories.some(item => String(item.id) === previous)) select.value = previous;
+    select.disabled = false;
+    // Populate the first category on initial visit without requiring an extra click.
+    if (!activeBookCategory && select.value) loadBooks(false);
+  } catch (error) {
+    if (showError && !categoryData.length) {
+      select.innerHTML = '<option value="">Catalogue unavailable — retry</option>';
+      $('#books').innerHTML = '<div class="muted">Could not load catalogue: ' + safeText(error.message) + '</div>';
     }
   }
 }
@@ -1173,36 +1264,46 @@ function countUp(el, target, duration = 800) {
   requestAnimationFrame(update);
 }
 
-async function loadBooks() {
+async function loadBooks(forceRefresh = false) {
   const cat = $('#cat').value;
-  const btn = $('#loadBooks');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spin">&#8987;</span>';
+  if (!cat) return;
+  const requestId = ++bookLoadRequest;
+  const button = $('#loadBooks');
+  button.disabled = true;
+  button.innerHTML = '<span class="spin">&#8987;</span>';
+  const cacheKey = cat === 'all' ? 'all-books' : 'category.' + cat;
+  const cached = forceRefresh ? null : readLocalCache(cacheKey);
+  if (Array.isArray(cached) && cached.length) {
+    renderBooks(cached, cat);
+    button.disabled = false;
+    button.textContent = 'Reload';
+    refreshBooks(cat, requestId, false, false);
+    return;
+  }
   showSkeletons();
-  $('#bookCount').textContent = '';
+  $('#bookCount').textContent = cat === 'all' ? 'Loading all categories…' : 'Loading…';
+  await refreshBooks(cat, requestId, true, forceRefresh);
+}
+async function refreshBooks(cat, requestId, showError, forceRefresh = false) {
+  const button = $('#loadBooks');
   try {
-    const books = await api('/api/books?cat='+cat);
-    if (!books.length) { $('#books').innerHTML='<div class="muted">No books found.</div>'; return; }
-    countUp($('#bookCount'), books.length);
-    $('#books').innerHTML = books.map((b, i) => {
-      const coverUrl = b.cover || '';
-      const coverHtml = coverUrl
-        ? `<img src="${coverUrl}" class="book-cover-img" alt="cover" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=\\'book-icon-fallback\\'>📚</div>'"/>`
-        : `<div class="book-icon-fallback">📚</div>`;
-      return `
-      <div class="book-item" data-id="${b.book_id}" data-name="${encodeURIComponent(b.name)}" data-cover="${encodeURIComponent(coverUrl)}" style="animation-delay: ${i * 0.06}s;">
-        ${coverHtml}
-        <div class="info">
-          <div class="name">${b.name}</div>
-          <div class="sub">ID: ${b.book_id}</div>
-        </div>
-      </div>`;
-    }).join('');
-    document.querySelectorAll('.book-item').forEach(el=>el.onclick=()=>selectBook(el));
-  } catch(e) {
-    $('#books').innerHTML=`<div class="muted">Error: ${e.message}</div>`;
+    const response = await api('/api/books?' + (cat === 'all' ? 'all=true' : 'cat=' + encodeURIComponent(cat)) + (forceRefresh ? '&refresh=true' : ''));
+    if (requestId !== bookLoadRequest || String($('#cat').value) !== String(cat)) return;
+    if (!Array.isArray(response)) throw new Error('Invalid catalogue response');
+    const names = categoryData.reduce((map, item) => (map[String(item.id)] = item.name, map), {});
+    const decorated = response.map(book => ({...book, category_name: book.category_name || names[String(book.category_id)] || ''}));
+    writeLocalCache(cat === 'all' ? 'all-books' : 'category.' + cat, decorated);
+    renderBooks(decorated, cat);
+  } catch (error) {
+    if (requestId === bookLoadRequest && showError) {
+      $('#books').innerHTML = '<div class="muted">Catalogue error: ' + safeText(error.message) + ' — tap Reload to retry.</div>';
+      $('#bookCount').textContent = '';
+    }
   } finally {
-    btn.disabled=false; btn.textContent='Load';
+    if (requestId === bookLoadRequest) {
+      button.disabled = false;
+      button.textContent = 'Reload';
+    }
   }
 }
 
@@ -1348,21 +1449,32 @@ async function cancelJob(jid) {
   setTimeout(pollJobs, 380);
 }
 
+let jobsPollTimer = null;
+let jobsPollInFlight = false;
 async function pollJobs() {
+  if (jobsPollInFlight) return;
+  jobsPollInFlight = true;
+  let delay = 20000;
   try {
-    const js = await api('/api/jobs');
+    const list = await api('/api/jobs');
     const section = $('#jobsSection');
-    const el = $('#jobs');
-    if (!js.length) {
+    const container = $('#jobs');
+    if (!list.length) {
       section.classList.remove('show');
-      el.innerHTML = '';
+      container.innerHTML = '';
     } else {
       section.classList.add('show');
-      el.innerHTML = js.map(jobCard).join('');
-      const mainEmpty = document.getElementById('mainEmpty');
-      if (mainEmpty) mainEmpty.remove();
+      container.innerHTML = list.map(jobCard).join('');
+      const empty = document.getElementById('mainEmpty');
+      if (empty) empty.remove();
     }
+    delay = list.some(job => !['done','error','cancelled'].includes(job.status)) ? 2500 : 15000;
   } catch {}
+  finally {
+    jobsPollInFlight = false;
+    clearTimeout(jobsPollTimer);
+    jobsPollTimer = setTimeout(pollJobs, delay);
+  }
 }
 
 // ===================== EBOOK READER =====================
@@ -1375,7 +1487,7 @@ async function pollJobs() {
 //          range requests instead of loading the whole file into memory.
 const reader = {
   mode: null, bookId: null, jobId: null, total: 1, page: 1,
-  pdfDoc: null, pdfTask: null, rendering: false,
+  pdfDoc: null, pdfTask: null, rendering: false, renderToken: 0, renderTask: null,
 };
 
 // Zoom/pan state — independent of which page is showing. Pinch-zooming or
@@ -1518,29 +1630,41 @@ function readerShowPage(n) {
 }
 
 async function renderPdfPage(n) {
-  if (reader.rendering) return;
-  reader.rendering = true;
+  const token = ++reader.renderToken;
+  if (reader.renderTask) { try { reader.renderTask.cancel(); } catch {} }
   _readerSpin(true);
   const els = _readerEls();
   try {
-    const page = await reader.pdfDoc.getPage(n);
+    const doc = reader.pdfDoc;
+    if (!doc) return;
+    const page = await doc.getPage(n);
+    if (token !== reader.renderToken) return;
     const canvas = els.canvas;
-    const ctx = canvas.getContext('2d');
+    const context = canvas.getContext('2d', { alpha: false });
     const wrap = els.wrap;
-    const vp0 = page.getViewport({ scale: 1 });
-    const scale = Math.min(2.2, (wrap.clientWidth - 16) / vp0.width, (wrap.clientHeight - 16) / vp0.height);
-    const viewport = page.getViewport({ scale: Math.max(0.3, scale) });
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    const base = page.getViewport({ scale: 1 });
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const scale = Math.max(0.3, Math.min(1.8, (wrap.clientWidth - 16) / base.width, (wrap.clientHeight - 16) / base.height));
+    const viewport = page.getViewport({ scale: scale * dpr });
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    canvas.style.width = Math.floor(viewport.width / dpr) + 'px';
+    canvas.style.height = Math.floor(viewport.height / dpr) + 'px';
+    reader.renderTask = page.render({ canvasContext: context, viewport });
+    await reader.renderTask.promise;
+    if (token !== reader.renderToken) return;
     els.img.style.display = 'none';
     canvas.style.display = 'block';
-  } catch (e) {
-    els.error.style.display = 'block';
-    els.error.textContent = 'Could not render this page.';
+  } catch (error) {
+    if (error?.name !== 'RenderingCancelledException' && token === reader.renderToken) {
+      els.error.style.display = 'block';
+      els.error.textContent = 'Could not render this page.';
+    }
   } finally {
-    _readerSpin(false);
-    reader.rendering = false;
+    if (token === reader.renderToken) {
+      _readerSpin(false);
+      reader.renderTask = null;
+    }
   }
 }
 
@@ -1572,7 +1696,12 @@ function closeReader() {
   }
   // free everything immediately — don't wait for GC
   els.img.src = '';
+  reader.renderToken++;
+  if (reader.renderTask) { try { reader.renderTask.cancel(); } catch {} }
+  reader.renderTask = null;
+  if (reader.pdfTask) { try { reader.pdfTask.destroy(); } catch {} }
   if (reader.pdfDoc) { try { reader.pdfDoc.destroy(); } catch {} }
+  reader.renderTask = null; reader.pdfTask = null;
   reader.pdfDoc = null; reader.mode = null; reader.bookId = null; reader.jobId = null;
   _resetZoom(false);
 }
@@ -1710,12 +1839,136 @@ document.addEventListener('keydown', (e) => {
   });
 })();
 
+
+const BATCH_STORAGE_KEY = 'yct.categoryDownload.active.v2';
+let activeBatchId = null;
+let batchPollTimer = null;
+let batchPollBusy = false;
+
+function categoryDownloadMessage(message) {
+  $('#categoryDownloadStatus').textContent = message;
+}
+function startBatchPolling(id) {
+  activeBatchId = id;
+  try { localStorage.setItem(BATCH_STORAGE_KEY, id); } catch {}
+  pollCategoryDownload();
+}
+function clearBatchTracking() {
+  try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
+  activeBatchId = null;
+  $('#downloadCategory').disabled = false;
+}
+async function pollCategoryDownload() {
+  if (!activeBatchId || batchPollBusy) return;
+  batchPollBusy = true;
+  let nextDelay = 5000;
+  try {
+    const status = await api('/api/category-download/' + encodeURIComponent(activeBatchId));
+    const done = Number(status.done_books || 0);
+    const total = Number(status.total_books || 0);
+    const pages = Number(status.done_pages || 0);
+    const parts = Number(status.uploaded_parts || 0);
+    if (status.status === 'done') {
+      categoryDownloadMessage('Complete · ' + done + '/' + total + ' books · ' + parts +
+        ' PDF file(s) saved to Telegram · skipped books: ' + (status.skipped_books || 0) +
+        '. Open your configured Telegram storage chat/channel to access them.');
+      clearBatchTracking();
+    } else if (status.status === 'error') {
+      categoryDownloadMessage('Stopped: ' + (status.error || 'unknown error') +
+        '. Files already uploaded are still in Telegram.');
+      clearBatchTracking();
+    } else if (status.status === 'cancelled') {
+      categoryDownloadMessage('Cancelled · ' + parts +
+        ' PDF file(s) already saved to Telegram. Those files remain available.');
+      clearBatchTracking();
+    } else {
+      const current = status.current_book ? ' · ' + status.current_book : '';
+      const pageText = status.current_pages ? ' · pages ' + status.current_pages : '';
+      categoryDownloadMessage('Sending to Telegram · ' + done + '/' + total +
+        ' books · ' + pages + '/' + (status.total_pages || '?') + ' pages · ' +
+        parts + ' PDF file(s) uploaded' + current + pageText +
+        '. You may minimize this page, but keep the tab open if possible; Render free instances can restart.');
+      nextDelay = 5000;
+    }
+  } catch (error) {
+    categoryDownloadMessage('Reconnecting… if Render restarted, files already sent remain in Telegram; start again after checking the channel.');
+    nextDelay = 10000;
+  } finally {
+    batchPollBusy = false;
+    clearTimeout(batchPollTimer);
+    if (activeBatchId) batchPollTimer = setTimeout(pollCategoryDownload, nextDelay);
+  }
+}
+async function downloadSelectedCategory() {
+  if (activeBatchId) {
+    categoryDownloadMessage('A category export is already running.');
+    return;
+  }
+  const categoryId = $('#cat').value;
+  const books = activeBooks || [];
+  if (!books.length) {
+    categoryDownloadMessage('Load a category first, then start its export.');
+    return;
+  }
+  const category = categoryId === 'all'
+    ? 'All categories'
+    : ($('#cat').selectedOptions[0]?.textContent || 'Selected category');
+  if (!confirm('Send ' + books.length + ' books from "' + category +
+      '" to Telegram one book/page-part at a time? No large ZIP will be created on Render. ' +
+      'A free Render restart can stop the current run, but files already uploaded remain in Telegram.')) return;
+  const button = $('#downloadCategory');
+  button.disabled = true;
+  categoryDownloadMessage('Starting Telegram export…');
+  try {
+    const response = await fetch('/api/category-download', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({category_name: category, books})
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Could not start export');
+    categoryDownloadMessage('Started · preparing to send ' + data.total_books + ' books to Telegram…');
+    startBatchPolling(data.job_id);
+  } catch (error) {
+    button.disabled = false;
+    categoryDownloadMessage('Could not start: ' + error.message);
+  }
+}
+
 renderMain();
 health();
 loadCats();
 pollJobs();
-setInterval(pollJobs, 3000);
-$('#loadBooks').onclick = loadBooks;
+$('#loadBooks').onclick = () => loadBooks(false);
+$('#downloadCategory').addEventListener('click', downloadSelectedCategory);
+$('#cat').addEventListener('change', () => loadBooks(false));
+try {
+  const savedBatch = localStorage.getItem(BATCH_STORAGE_KEY);
+  if (savedBatch) {
+    activeBatchId = savedBatch;
+    $('#downloadCategory').disabled = true;
+    categoryDownloadMessage('Reconnecting to your category download…');
+    pollCategoryDownload();
+  }
+} catch {}
+$('#bookSearch').addEventListener('input', () => {
+  if (activeBookCategory === String($('#cat').value)) renderBooks(activeBooks, activeBookCategory);
+});
+$('#refreshCatalog').addEventListener('click', async () => {
+  const button = $('#refreshCatalog');
+  button.disabled = true;
+  const previousCategory = $('#cat').value;
+  try {
+    await refreshCats(true, true);
+    // Keep the same category selected when it still exists.
+    if (previousCategory && [...$('#cat').options].some(option => option.value === previousCategory)) {
+      $('#cat').value = previousCategory;
+    }
+  } finally {
+    await loadBooks(true);
+    button.disabled = false;
+  }
+});
 </script>
 </body>
 </html>

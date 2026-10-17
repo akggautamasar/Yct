@@ -110,6 +110,11 @@ async def login(request: Request):
     return HTMLResponse(LOGIN_PAGE.replace("__ERROR__", err), status_code=401, headers=_NO_CACHE_HEADERS)
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    await scraper.close_client()
+
+
 @app.on_event("startup")
 async def startup():
     jobs.start_worker()
@@ -157,86 +162,223 @@ async def index(request: Request):
 
 
 # ---------------- REST API ----------------
+# Small process-local TTL cache. Render restarts discard it safely; no paid
+# database or additional always-on service is needed for these optimizations.
+_CACHE_TTL = {"categories": 15 * 60, "books": 30 * 60, "pages": 30 * 60}
+_API_CACHE: dict[tuple, tuple[float, object]] = {}
+_API_INFLIGHT: dict[tuple, asyncio.Task] = {}
+_API_CACHE_MAX = 64
+_API_CACHE_LOCK = asyncio.Lock()
+
+
+def _api_cache_get(key):
+    entry = _API_CACHE.get(key)
+    if not entry:
+        return None
+    expiry, value = entry
+    if expiry <= asyncio.get_running_loop().time():
+        _API_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _api_cache_set(key, value, ttl):
+    now = asyncio.get_running_loop().time()
+    if ttl > 0:
+        _API_CACHE[key] = (now + ttl, value)
+    if len(_API_CACHE) > _API_CACHE_MAX:
+        for old_key, (expiry, _) in list(_API_CACHE.items()):
+            if expiry <= now:
+                _API_CACHE.pop(old_key, None)
+        while len(_API_CACHE) > _API_CACHE_MAX:
+            _API_CACHE.pop(next(iter(_API_CACHE)))
+
+
+async def _cached_api_value(key, ttl, producer):
+    cached = _api_cache_get(key)
+    if cached is not None:
+        return cached
+    async with _API_CACHE_LOCK:
+        cached = _api_cache_get(key)
+        if cached is not None:
+            return cached
+        task = _API_INFLIGHT.get(key)
+        if task is None:
+            task = asyncio.create_task(producer())
+            _API_INFLIGHT[key] = task
+    try:
+        value = await task
+    finally:
+        async with _API_CACHE_LOCK:
+            if _API_INFLIGHT.get(key) is task:
+                _API_INFLIGHT.pop(key, None)
+    _api_cache_set(key, value, ttl)
+    return value
+
+
+async def _ensure_upstream_login():
+    try:
+        ok = await asyncio.wait_for(scraper.login(), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "YCT login timed out — please try again shortly")
+    if not ok:
+        raise HTTPException(502, "YCT login failed — check YCT_EMAIL / YCT_PASSWORD")
+    return True
+
 
 @app.get("/api/categories")
-async def api_categories():
-    try:
-        logged_in = await asyncio.wait_for(scraper.login(), timeout=30)
-    except asyncio.TimeoutError:
-        raise HTTPException(504, "login timed out — check YCT_EMAIL / YCT_PASSWORD")
-    if not logged_in:
-        raise HTTPException(502, "login failed — check YCT_EMAIL / YCT_PASSWORD")
-    cats = await scraper.get_categories()
-    return [{"id": k, "name": v} for k, v in sorted(cats.items())]
+async def api_categories(refresh: bool = False):
+    async def produce():
+        await _ensure_upstream_login()
+        categories = await scraper.get_categories()
+        return [{"id": key, "name": name} for key, name in sorted(categories.items())]
+    value = await _cached_api_value(("categories",), 0 if refresh else _CACHE_TTL["categories"], produce)
+    return [dict(row) for row in value]
 
 
 @app.get("/api/books")
-async def api_books(cat: int):
-    if not await scraper.login():
-        raise HTTPException(502, "login failed")
-    raw = await scraper.get_books_in_category(cat)
-    out = []
-    sem = asyncio.Semaphore(5)
+async def api_books(cat: int | None = None, refresh: bool = False, all: bool = False):
+    async def resolve_category(category_id: int):
+        async def produce():
+            await _ensure_upstream_login()
+            raw_books = await scraper.get_books_in_category(category_id)
+            semaphore = asyncio.Semaphore(4)
 
-    async def resolve(b):
-        async with sem:
-            name, book_id = await scraper.get_book_details(b["detail_id"])
-        return {"detail_id": b["detail_id"], "book_id": book_id,
-                "name": name, "cover": b.get("cover", "")}
+            async def resolve(book):
+                async with semaphore:
+                    name, book_id = await scraper.get_book_details(book["detail_id"])
+                if not book_id:
+                    return None
+                return {"detail_id": book["detail_id"], "book_id": book_id,
+                        "name": name, "cover": book.get("cover", ""),
+                        "category_id": category_id}
+            rows = await asyncio.gather(*(resolve(book) for book in raw_books))
+            return [row for row in rows if row]
+        value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"], produce)
+        return [dict(row) for row in value]
 
-    out = await asyncio.gather(*(resolve(b) for b in raw))
-    return [b for b in out if b["book_id"]]
+    await _ensure_upstream_login()
+    if all or cat is None:
+        categories = await _cached_api_value(
+            ("category_map",), 0 if refresh else _CACHE_TTL["categories"],
+            lambda: scraper.get_categories()
+        )
+        merged = []
+        seen = set()
+        for category_id in sorted(categories):
+            for book in await resolve_category(int(category_id)):
+                if book["book_id"] not in seen:
+                    seen.add(book["book_id"])
+                    merged.append(book)
+        return merged
+    return await resolve_category(int(cat))
 
 
 @app.get("/api/pages")
-async def api_pages(book_id: int):
-    if not await scraper.login():
-        raise HTTPException(502, "login failed")
-    total = await scraper.get_total_pages(book_id)
-    return {"book_id": book_id, "total_pages": total}
+async def api_pages(book_id: int, refresh: bool = False):
+    async def produce():
+        await _ensure_upstream_login()
+        total = await scraper.get_total_pages(book_id)
+        return {"book_id": book_id, "total_pages": total}
+    value = await _cached_api_value(("pages", int(book_id)), 0 if refresh else _CACHE_TTL["pages"], produce)
+    return dict(value)
 
 
 # ---------------- In-browser page preview (no disk write, no full job) ----------------
-# A tiny bounded cache so flipping back-and-forth doesn't re-hit YCT every
-# time, but it can never grow unbounded — at most _PAGE_CACHE_MAX pages
-# (~a few MB) live in RAM at once, regardless of how many books are browsed.
-_PAGE_CACHE: dict[tuple[int, int], tuple[bytes, str]] = {}
+# Strictly bounded LRU/TTL preview cache; book images never touch disk.
+_PAGE_CACHE: dict[tuple[int, int], tuple[float, bytes, str]] = {}
 _PAGE_CACHE_ORDER: list[tuple[int, int]] = []
-_PAGE_CACHE_MAX = 12
+_PAGE_CACHE_MAX = 8
+_PAGE_CACHE_BYTES_MAX = 8 * 1024 * 1024
+_PAGE_CACHE_BYTES = 0
+_PAGE_CACHE_TTL = 15 * 60
+_PAGE_INFLIGHT: dict[tuple[int, int], asyncio.Task] = {}
+_PAGE_CACHE_LOCK = asyncio.Lock()
 
 
-def _cache_page(key: tuple[int, int], value: tuple[bytes, str]):
-    if key in _PAGE_CACHE:
-        try: _PAGE_CACHE_ORDER.remove(key)
-        except ValueError: pass
-    _PAGE_CACHE[key] = value
+def _get_cached_page(key):
+    global _PAGE_CACHE_BYTES
+    entry = _PAGE_CACHE.get(key)
+    if not entry:
+        return None
+    expiry, data, ext = entry
+    if expiry <= asyncio.get_running_loop().time():
+        _PAGE_CACHE.pop(key, None)
+        try:
+            _PAGE_CACHE_ORDER.remove(key)
+        except ValueError:
+            pass
+        _PAGE_CACHE_BYTES = max(0, _PAGE_CACHE_BYTES - len(data))
+        return None
+    try:
+        _PAGE_CACHE_ORDER.remove(key)
+    except ValueError:
+        pass
     _PAGE_CACHE_ORDER.append(key)
-    while len(_PAGE_CACHE_ORDER) > _PAGE_CACHE_MAX:
-        oldest = _PAGE_CACHE_ORDER.pop(0)
-        _PAGE_CACHE.pop(oldest, None)
+    return data, ext
+
+
+def _cache_page(key, value):
+    global _PAGE_CACHE_BYTES
+    data, ext = value
+    if len(data) > _PAGE_CACHE_BYTES_MAX:
+        return
+    previous = _PAGE_CACHE.pop(key, None)
+    if previous:
+        _PAGE_CACHE_BYTES = max(0, _PAGE_CACHE_BYTES - len(previous[1]))
+        try:
+            _PAGE_CACHE_ORDER.remove(key)
+        except ValueError:
+            pass
+    _PAGE_CACHE[key] = (asyncio.get_running_loop().time() + _PAGE_CACHE_TTL, data, ext)
+    _PAGE_CACHE_BYTES += len(data)
+    _PAGE_CACHE_ORDER.append(key)
+    while _PAGE_CACHE_ORDER and (len(_PAGE_CACHE_ORDER) > _PAGE_CACHE_MAX or _PAGE_CACHE_BYTES > _PAGE_CACHE_BYTES_MAX):
+        old_key = _PAGE_CACHE_ORDER.pop(0)
+        removed = _PAGE_CACHE.pop(old_key, None)
+        if removed:
+            _PAGE_CACHE_BYTES = max(0, _PAGE_CACHE_BYTES - len(removed[1]))
+
+
+async def _fetch_preview_page(book_id: int, page: int):
+    await _ensure_upstream_login()
+    return await scraper.fetch_page_bytes(book_id, page)
 
 
 @app.get("/api/books/{book_id}/page/{page}")
-async def api_book_page(book_id: int, page: int):
-    """Stream a single page image straight from YCT — nothing is ever
-    written to disk and at most a handful of pages sit in memory, so
-    previewing a 500-page book costs the same RAM as previewing a 5-page
-    one."""
+async def api_book_page(book_id: int, page: int, request: Request):
+    if book_id < 1 or page < 1:
+        raise HTTPException(400, "book_id and page must be positive")
     key = (book_id, page)
-    cached = _PAGE_CACHE.get(key)
+    cached = _get_cached_page(key)
     if cached:
         data, ext = cached
     else:
-        if not await scraper.login():
-            raise HTTPException(502, "login failed")
-        result = await scraper.fetch_page_bytes(book_id, page)
-        if not result:
-            raise HTTPException(404, "page not available")
-        data, ext = result
-        _cache_page(key, (data, ext))
-    media = "image/png" if ext == "png" else "image/jpeg"
-    return Response(content=data, media_type=media,
-                     headers={"Cache-Control": "private, max-age=900"})
+        async with _PAGE_CACHE_LOCK:
+            cached = _get_cached_page(key)
+            task = _PAGE_INFLIGHT.get(key)
+            if cached:
+                data, ext = cached
+                task = None
+            elif task is None:
+                task = asyncio.create_task(_fetch_preview_page(book_id, page))
+                _PAGE_INFLIGHT[key] = task
+        if task is not None:
+            try:
+                result = await task
+            finally:
+                async with _PAGE_CACHE_LOCK:
+                    if _PAGE_INFLIGHT.get(key) is task:
+                        _PAGE_INFLIGHT.pop(key, None)
+            if not result:
+                raise HTTPException(404, "page not available")
+            data, ext = result
+            _cache_page(key, result)
+    etag = hashlib.sha256(data).hexdigest()[:24]
+    headers = {"Cache-Control": "private, max-age=900, stale-while-revalidate=60", "ETag": f'"{etag}"'}
+    if request.headers.get("if-none-match", "").strip('"') == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=data, media_type="image/png" if ext == "png" else "image/jpeg", headers=headers)
 
 
 @app.get("/api/jobs/{jid}/read")
@@ -260,6 +402,59 @@ async def api_job_read(jid: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+
+
+
+class CategoryArchiveReq(BaseModel):
+    category_name: str = "Selected category"
+    books: list[dict]
+    max_books: int = 1000
+
+
+@app.post("/api/category-download")
+async def api_category_download(req: CategoryArchiveReq):
+    if not config.TG_TOKEN or not config.TG_CHAT_ID:
+        raise HTTPException(
+            503,
+            "Category export saves files to Telegram. Configure TG_TOKEN and TG_CHAT_ID on Render first.",
+        )
+    if not req.books:
+        raise HTTPException(400, "No books are loaded for this category")
+    if len(req.books) > min(req.max_books, 1000):
+        raise HTTPException(413, "Too many books in one request; choose a smaller category")
+    books = []
+    seen = set()
+    for item in req.books:
+        try:
+            book_id = int(item.get("book_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if book_id > 0 and book_id not in seen:
+            seen.add(book_id)
+            books.append({
+                "book_id": book_id,
+                "name": str(item.get("name") or f"Book {book_id}")[:180],
+                "total_pages": item.get("total_pages"),
+            })
+    if not books:
+        raise HTTPException(400, "No valid books were provided")
+    batch_id = jobs.start_category_archive(req.category_name[:120], books)
+    return {"job_id": batch_id, "total_books": len(books), "destination": "Telegram"}
+
+
+@app.get("/api/category-download/{batch_id}")
+async def api_category_download_status(batch_id: str):
+    status = jobs.get_category_archive(batch_id)
+    if not status:
+        raise HTTPException(404, "Category export job not found. Render may have restarted; check Telegram for files already uploaded.")
+    return status
+
+
+@app.delete("/api/category-download/{batch_id}")
+async def api_category_download_cancel(batch_id: str):
+    if not jobs.cancel_category_archive(batch_id):
+        raise HTTPException(404, "Category export job not found or already finished")
+    return {"ok": True}
 
 
 class DownloadReq(BaseModel):

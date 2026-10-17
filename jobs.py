@@ -18,6 +18,7 @@ import shutil
 import asyncio
 import time
 import gc
+import html
 
 GATE_TIMEOUT_SECONDS = 30 * 60   # auto-advance after 30 min if user vanishes
 
@@ -347,12 +348,230 @@ async def _process(jid: str):
             await tg.send_message(f"<b>✗ Failed</b>\n{title}\n{str(e)[:200]}", chat)
 
 
+
+# C# Category downloads use Telegram as the destination instead of building a giant ZIP.
+# A single shared lock prevents category exports from competing with normal PDF jobs
+# for Render's limited CPU, RAM, and ephemeral disk.
+BATCH_JOBS: dict[str, dict] = {}
+_resource_lock = asyncio.Lock()
+
+
+def start_category_archive(category_name: str, books: list[dict]) -> str:
+    batch_id = uuid.uuid4().hex[:10]
+    job = {
+        "id": batch_id, "title": category_name or "All categories",
+        "status": "queued", "done_books": 0, "total_books": len(books),
+        "done_pages": 0, "total_pages": 0, "uploaded_parts": 0,
+        "current_book": "", "current_pages": "", "skipped_books": 0,
+        "skipped_details": [], "failed_parts": 0, "error": None,
+        "created_at": int(time.time()), "cancelled": False,
+    }
+    BATCH_JOBS[batch_id] = job
+    asyncio.create_task(_process_category_archive(batch_id, [dict(b) for b in books]))
+    return batch_id
+
+
+def get_category_archive(batch_id: str) -> dict | None:
+    job = BATCH_JOBS.get(batch_id)
+    if not job:
+        return None
+    return {k: v for k, v in job.items() if k != "cancelled"}
+
+
+def cancel_category_archive(batch_id: str) -> bool:
+    job = BATCH_JOBS.get(batch_id)
+    if not job or job.get("status") in ("done", "error", "cancelled"):
+        return False
+    job["cancelled"] = True
+    job["status"] = "cancelling"
+    return True
+
+
+def _category_skip(job: dict, detail: str):
+    job["skipped_books"] += 1
+    if len(job["skipped_details"]) < 30:
+        job["skipped_details"].append(detail[:180])
+
+
+async def _process_category_archive(batch_id: str, books: list[dict]):
+    job = BATCH_JOBS[batch_id]
+    async with _resource_lock:
+        if job.get("cancelled"):
+            job["status"] = "cancelled"
+            return
+        await _run_category_telegram_export(batch_id, books)
+
+
+async def _run_category_telegram_export(batch_id: str, books: list[dict]):
+    job = BATCH_JOBS[batch_id]
+    chat = config.TG_CHAT_ID
+    try:
+        job["status"] = "logging_in"
+        if not config.TG_TOKEN or not chat:
+            raise RuntimeError("Telegram storage is not configured. Set TG_TOKEN and TG_CHAT_ID on Render.")
+        if not await scraper.login():
+            raise RuntimeError("YCT login failed; check YCT_EMAIL / YCT_PASSWORD")
+
+        await tg.send_message(
+            f"<b>YCT category export started</b>\n{len(books)} books\n"
+            "Books will be uploaded one at a time in page-sized PDF parts. "
+            "Files already uploaded stay in Telegram if the Render service restarts.",
+            chat,
+        )
+
+        for index, book in enumerate(books, 1):
+            if job.get("cancelled"):
+                job["status"] = "cancelled"
+                await tg.send_message(
+                    f"<b>Category export cancelled</b>\nUploaded {job['uploaded_parts']} PDF part(s); "
+                    f"{job['done_books']}/{job['total_books']} books processed.", chat)
+                return
+
+            try:
+                book_id = int(book.get("book_id") or 0)
+            except (TypeError, ValueError):
+                book_id = 0
+            if book_id < 1:
+                _category_skip(job, str(book.get("name") or "Invalid book ID"))
+                job["done_books"] = index
+                continue
+
+            title = _safe_filename(str(book.get("name") or f"Book {book_id}"), f"Book {book_id}")
+            job["current_book"] = title
+            job["status"] = f"checking book {index}/{len(books)}"
+            total_pages = book.get("total_pages")
+            try:
+                total_pages = int(total_pages) if total_pages else 0
+            except (TypeError, ValueError):
+                total_pages = 0
+            if total_pages < 1:
+                total_pages = await scraper.get_total_pages(book_id)
+            if not total_pages or total_pages < 1:
+                _category_skip(job, f"{title}: page count unavailable")
+                job["done_books"] = index
+                continue
+            job["total_pages"] += int(total_pages)
+
+            if not await scraper.has_access(book_id):
+                _category_skip(job, f"{title}: no access")
+                job["done_books"] = index
+                continue
+
+            chunk = max(1, min(config.CHUNK_PAGES, 40))
+            book_had_upload_failure = False
+            for start in range(1, int(total_pages) + 1, chunk):
+                if job.get("cancelled"):
+                    job["status"] = "cancelled"
+                    await tg.send_message(
+                        f"<b>Category export cancelled</b>\nUploaded {job['uploaded_parts']} PDF part(s).", chat)
+                    return
+                end = min(int(total_pages), start + chunk - 1)
+                job["current_pages"] = f"{start}-{end} of {total_pages}"
+                job["status"] = f"downloading {index}/{len(books)} · pages {start}-{end}"
+                folder = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}")
+                pdf_path = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}.pdf")
+                pdf_parts = []
+                os.makedirs(folder, exist_ok=True)
+                try:
+                    page_numbers = list(range(start, end + 1))
+                    ok, skipped, failed = await scraper.download_pages(book_id, page_numbers, folder)
+                    if failed:
+                        retry_ok, retry_skipped, failed = await scraper.download_pages(book_id, failed, folder)
+                        ok += retry_ok
+                        skipped += retry_skipped
+                    job["done_pages"] += ok + skipped
+                    if not ok and failed:
+                        job["failed_parts"] += 1
+                        if len(job["skipped_details"]) < 30:
+                            job["skipped_details"].append(f"{title}: pages {start}-{end} could not be downloaded")
+                        continue
+
+                    job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
+                    size_mb, _ = pdfbuilder.build(folder, pdf_path, False)
+                    if size_mb <= 0 or not os.path.isfile(pdf_path):
+                        job["failed_parts"] += 1
+                        if len(job["skipped_details"]) < 30:
+                            job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
+                        continue
+
+                    pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
+                    for part_number, part_path in enumerate(pdf_parts, 1):
+                        if job.get("cancelled"):
+                            job["status"] = "cancelled"
+                            return
+                        job["status"] = f"uploading {index}/{len(books)} · PDF part {part_number}/{len(pdf_parts)}"
+                        caption = f"<b>{html.escape(title)}</b>\nBook {index}/{len(books)} · pages {start}-{end}"
+                        if len(pdf_parts) > 1:
+                            caption += f" · file {part_number}/{len(pdf_parts)}"
+                        sent = await tg.send_document(part_path, caption, chat)
+                        if not sent:
+                            job["failed_parts"] += 1
+                            book_had_upload_failure = True
+                            raise RuntimeError(
+                                f"Telegram upload failed for {title}, pages {start}-{end}. "
+                                "Check bot permissions, chat ID, and Telegram file-size limits."
+                            )
+                        job["uploaded_parts"] += 1
+                        if part_path != pdf_path:
+                            try:
+                                os.remove(part_path)
+                            except OSError:
+                                pass
+                finally:
+                    # Also remove any remaining split files if an upload fails midway.
+                    for leftover in pdf_parts:
+                        if leftover != pdf_path:
+                            try:
+                                if os.path.exists(leftover):
+                                    os.remove(leftover)
+                            except OSError:
+                                pass
+                    shutil.rmtree(folder, ignore_errors=True)
+                    try:
+                        if os.path.exists(pdf_path):
+                            os.remove(pdf_path)
+                    except OSError:
+                        pass
+                    gc.collect()
+
+            if not book_had_upload_failure:
+                job["done_books"] = index
+
+        if job.get("cancelled"):
+            job["status"] = "cancelled"
+            return
+        job["status"] = "done"
+        job["current_book"] = ""
+        job["current_pages"] = ""
+        await tg.send_message(
+            f"<b>✓ Category export complete</b>\n{job['title']}\n"
+            f"Books processed: {job['done_books']}/{job['total_books']}\n"
+            f"PDF files uploaded: {job['uploaded_parts']}\n"
+            f"Pages processed: {job['done_pages']}/{job['total_pages']}\n"
+            f"Skipped books: {job['skipped_books']}\n"
+            f"Failed page batches/uploads: {job['failed_parts']}",
+            chat,
+        )
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)[:400]
+        try:
+            await tg.send_message(
+                f"<b>✗ Category export stopped</b>\n{job['title']}\n"
+                f"Uploaded files remain in Telegram.\n{str(exc)[:250]}",
+                chat,
+            )
+        except Exception:
+            pass
+
+
 async def _worker():
     while True:
         jid = await _q().get()
         try:
             if jid in JOBS:
-                await _process(jid)
+                async with _resource_lock:
+                    await _process(jid)
         finally:
             _q().task_done()
 
