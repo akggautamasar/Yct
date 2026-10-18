@@ -537,6 +537,19 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             max_book_bytes = max(40, int(os.getenv("TG_FULL_BOOK_MAX_MB", "250"))) * 1048576
             staged = []
             staged_bytes = 0
+            # One-batch lookahead: download the next part while the current
+            # part is being built/uploaded. Only two page batches occupy disk.
+            prefetch = None
+            async def fetch_batch(first, last, target_folder):
+                os.makedirs(target_folder, exist_ok=True)
+                numbers = list(range(first, last + 1))
+                ok, skipped, failed = await scraper.download_pages(book_id, numbers, target_folder)
+                if failed:
+                    retry_ok, retry_skipped, failed = await scraper.download_pages(book_id, failed, target_folder)
+                    ok += retry_ok
+                    skipped += retry_skipped
+                return ok, skipped, failed
+
             for start in range(1, int(total_pages) + 1, chunk):
                 await _wait_if_paused(job)
                 if index == job["resume_book"] and start + chunk - 1 < job["resume_page"]:
@@ -555,11 +568,16 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                 os.makedirs(folder, exist_ok=True)
                 try:
                     page_numbers = list(range(start, end + 1))
-                    ok, skipped, failed = await scraper.download_pages(book_id, page_numbers, folder)
-                    if failed:
-                        retry_ok, retry_skipped, failed = await scraper.download_pages(book_id, failed, folder)
-                        ok += retry_ok
-                        skipped += retry_skipped
+                    if prefetch is not None:
+                        ok, skipped, failed = await prefetch
+                        prefetch = None
+                    else:
+                        ok, skipped, failed = await fetch_batch(start, end, folder)
+                    next_start = end + 1
+                    if next_start <= int(total_pages) and not job.get("cancelled") and not job.get("paused"):
+                        next_end = min(int(total_pages), next_start + chunk - 1)
+                        next_folder = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{next_start}_{next_end}")
+                        prefetch = asyncio.create_task(fetch_batch(next_start, next_end, next_folder))
                     job["done_pages"] += ok + skipped
                     if failed:
                         job["failed_parts"] += 1
@@ -568,14 +586,14 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         continue
 
                     job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
-                    size_mb, _ = pdfbuilder.build(folder, pdf_path, False)
+                    size_mb, _ = await asyncio.to_thread(pdfbuilder.build, folder, pdf_path, False)
                     if size_mb <= 0 or not os.path.isfile(pdf_path):
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
                             job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
                         continue
 
-                    validate_pdf_pages(pdf_path, len(page_numbers))
+                    await asyncio.to_thread(validate_pdf_pages, pdf_path, len(page_numbers))
                     if full_mode:
                         staged_path = os.path.join(config.WORK_DIR, f"stage_{batch_id}_{book_id}_{start}_{end}.pdf")
                         os.replace(pdf_path, staged_path)
@@ -589,7 +607,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             staged.clear()
                         continue
 
-                    pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
+                    pdf_parts = await asyncio.to_thread(pdfbuilder.split_for_telegram, pdf_path)
                     for part_number, part_path in enumerate(pdf_parts, 1):
                         await _wait_if_paused(job)
                         if job.get("cancelled"):
@@ -642,6 +660,8 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         pass
                     gc.collect()
 
+            if prefetch is not None:
+                await prefetch
             if staged:
                 merged_path = os.path.join(config.WORK_DIR, f"{title}.pdf")
                 try:
