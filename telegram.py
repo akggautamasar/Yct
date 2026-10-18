@@ -82,8 +82,15 @@ async def send_document(path: str, caption: str = "",
                               "parse_mode": "HTML"},
                         files={"document": (os.path.basename(path), f)},
                     )
-                if r.status_code == 200:
+                if r.status_code == 200 and r.json().get("ok") is True:
                     return True
+                if r.status_code == 429:
+                    try:
+                        retry_after = int(r.json().get("parameters", {}).get("retry_after", 5))
+                    except (ValueError, TypeError):
+                        retry_after = 5
+                    await asyncio.sleep(min(retry_after, 120))
+                    continue
                 if r.status_code in (400, 403, 413):
                     return False
             except Exception:
