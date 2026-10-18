@@ -252,8 +252,17 @@ async def api_books(cat: int | None = None, refresh: bool = False, all: bool = F
                 return {"detail_id": book["detail_id"], "book_id": book_id,
                         "name": name, "cover": book.get("cover", ""),
                         "category_id": category_id}
-            rows = await asyncio.gather(*(resolve(book) for book in raw_books))
-            return [row for row in rows if row]
+            rows = await asyncio.gather(*(resolve(book) for book in raw_books), return_exceptions=True)
+            resolved = [row for row in rows if isinstance(row, dict)]
+            if not resolved:
+                import logging
+                logging.getLogger(__name__).error(
+                    "YCT category %s: %s detail links but zero reader IDs; errors=%s",
+                    category_id, len(raw_books),
+                    [str(row)[:200] for row in rows if isinstance(row, BaseException)][:5],
+                )
+                raise HTTPException(502, "YCT returned book links but no readable book IDs; source layout or access may have changed")
+            return resolved
         value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"], produce)
         return [dict(row) for row in value]
 
