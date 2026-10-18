@@ -39,60 +39,22 @@ def build_lossless(folder: str, pdf_path: str) -> float:
     if not imgs:
         return 0.0
 
-    writer = PdfWriter()
-    added = 0
-
-    for fn in imgs:
-        p = os.path.join(folder, fn)
-        tmp_jpg = os.path.splitext(p)[0] + "_prep.jpg"
-        tmp_pdf = os.path.splitext(p)[0] + "_prep.pdf"
-        try:
-            # --- normalize one page, write a temp JPEG ---
-            with Image.open(p) as im:
-                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
-                    im = im.convert("RGBA")
-                    bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
-                    im = Image.alpha_composite(bg, im).convert("RGB")
-                elif im.mode != "RGB":
-                    im = im.convert("RGB")
-                im.save(tmp_jpg, format="JPEG", quality=92, subsampling=0, optimize=True)
-
-            # --- one-page PDF from that JPEG ---
-            with open(tmp_pdf, "wb") as f:
-                f.write(img2pdf.convert(tmp_jpg))
-
-            # --- append to the growing document, then free the page ---
-            with open(tmp_pdf, "rb") as src:
-                reader = PdfReader(src)
-                for pg in reader.pages:
-                    writer.add_page(pg)
-            del reader
-            added += 1
-        except Exception:
-            pass
-        finally:
-            # delete the page image too — we don't need it after this
-            for t in (tmp_jpg, tmp_pdf):
-                try: os.remove(t)
-                except: pass
-            try: os.remove(p)
-            except: pass
-
-    if added == 0:
-        return 0.0
-
+    # Fast path: img2pdf embeds JPEG bytes directly, without expensive
+    # decode/re-encode or creating a temporary PDF for every page.
+    # Keep each batch bounded (category jobs use at most 40 pages).
     try:
-        with open(pdf_path, "wb") as f:
-            writer.write(f)
-        mb = os.path.getsize(pdf_path) / 1_048_576
-    except Exception:
-        mb = 0.0
-    finally:
-        # writer holds every page's content stream in RAM until this point —
-        # drop it immediately so the next batch starts with a clean slate.
-        del writer
-        gc.collect()
-    return mb
+        with open(pdf_path, "wb") as output:
+            output.write(img2pdf.convert([os.path.join(folder, fn) for fn in imgs]))
+        actual = len(PdfReader(pdf_path).pages)
+        if actual != len(imgs):
+            raise RuntimeError(f"Expected {len(imgs)} PDF pages, got {actual}")
+        return os.path.getsize(pdf_path) / 1048576
+    except Exception as exc:
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"PDF assembly failed: {exc}") from exc
 
 
 def _tesseract_ready() -> tuple[bool, list[str]]:
