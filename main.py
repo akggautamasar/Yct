@@ -158,12 +158,22 @@ async def login(request: Request):
 
 @app.on_event("shutdown")
 async def shutdown():
+    distributed_task = getattr(app.state, "distributed_worker", None)
+    if distributed_task:
+        distributed_task.cancel()
+        try:
+            await distributed_task
+        except asyncio.CancelledError:
+            pass
     await scraper.close_client()
 
 
 @app.on_event("startup")
 async def startup():
     jobs.start_worker()
+    if os.getenv("YCT_DISPATCH_URL") and os.getenv("YCT_DISPATCH_TOKEN"):
+        from distributed.executor import main as distributed_worker_main
+        app.state.distributed_worker = asyncio.create_task(distributed_worker_main())
     if config.PUBLIC_URL and config.TG_TOKEN:
         try:
             await tg.set_webhook()
