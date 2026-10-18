@@ -42,8 +42,8 @@ async def run_job(client, job):
             ok, skipped, failed = await scraper.download_pages(book_id, pages, image_dir)
             if failed:
                 _, _, failed = await scraper.download_pages(book_id, failed, image_dir)
-            if failed or skipped:
-                raise RuntimeError(f"Missing pages: {failed}; skipped: {skipped}")
+            if failed:
+                raise RuntimeError(f"Missing pages: {failed}")
             pdf_path = str(Path(folder) / "book.pdf")
             await asyncio.to_thread(pdfbuilder.build, image_dir, pdf_path, False)
             from pypdf import PdfReader
