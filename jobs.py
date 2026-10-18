@@ -19,6 +19,7 @@ import asyncio
 import time
 import gc
 import html
+import logging
 
 GATE_TIMEOUT_SECONDS = 30 * 60   # auto-advance after 30 min if user vanishes
 
@@ -29,6 +30,16 @@ import telegram as tg
 import checkpoint
 import user_uploader
 from pypdf import PdfWriter
+
+
+def validate_pdf_pages(path: str, expected: int):
+    from pypdf import PdfReader
+    if not os.path.isfile(path):
+        raise RuntimeError("PDF was not created")
+    reader = PdfReader(path)
+    actual = len(reader.pages)
+    if actual != expected:
+        raise RuntimeError(f"Incomplete PDF: expected {expected} pages, got {actual}")
 
 
 def _safe_filename(name: str, fallback: str) -> str:
@@ -244,6 +255,8 @@ async def _process(jid: str):
             ok, skip, failed = await scraper.download_pages(book_id, batch, folder, on_progress)
             if failed:
                 _, _, failed = await scraper.download_pages(book_id, failed, folder)
+            if failed:
+                raise RuntimeError(f"Missing pages {failed[:25]} in {title}; refusing incomplete PDF")
             total_failed += len(failed)
             total_done += len(batch) - len(failed)
             job["done"] = total_done
@@ -265,6 +278,7 @@ async def _process(jid: str):
             job["_cur_pdf"] = pdf_path
 
             mb, ocr_used = pdfbuilder.build(folder, pdf_path, job["do_ocr"])
+            validate_pdf_pages(pdf_path, len(batch))
             if ocr_used:
                 quality = "searchable OCR"
 
@@ -282,7 +296,8 @@ async def _process(jid: str):
                             cap += f" | part {bi}/{len(batches)}"
                         if len(tg_parts) > 1:
                             cap += f" [{pj}/{len(tg_parts)}]"
-                        await tg.send_document(part, cap, chat)
+                        if not await tg.send_document(part, cap, chat):
+                            raise RuntimeError(f"Telegram upload failed: {display_name}")
                         if part != pdf_path:
                             try: os.remove(part)
                             except: pass
@@ -535,7 +550,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                 job["current_pages"] = f"{start}-{end} of {total_pages}"
                 job["status"] = f"downloading {index}/{len(books)} · pages {start}-{end}"
                 folder = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}")
-                pdf_path = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{start}_{end}.pdf")
+                pdf_path = os.path.join(config.WORK_DIR, f"{_safe_filename(str(book.get('name') or title), f'Book {book_id}')} (p{start}-{end}).pdf")
                 pdf_parts = []
                 os.makedirs(folder, exist_ok=True)
                 try:
@@ -546,7 +561,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         ok += retry_ok
                         skipped += retry_skipped
                     job["done_pages"] += ok + skipped
-                    if not ok and failed:
+                    if failed:
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
                             job["skipped_details"].append(f"{title}: pages {start}-{end} could not be downloaded")
@@ -560,6 +575,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
                         continue
 
+                    validate_pdf_pages(pdf_path, len(page_numbers))
                     if full_mode:
                         staged_path = os.path.join(config.WORK_DIR, f"stage_{batch_id}_{book_id}_{start}_{end}.pdf")
                         os.replace(pdf_path, staged_path)
@@ -627,7 +643,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                     gc.collect()
 
             if staged:
-                merged_path = os.path.join(config.WORK_DIR, f"complete_{batch_id}_{book_id}.pdf")
+                merged_path = os.path.join(config.WORK_DIR, f"{title}.pdf")
                 try:
                     await _wait_if_paused(job)
                     if job.get("cancelled"):
@@ -648,6 +664,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             writer.close()
                             del writer
                             gc.collect()
+                        validate_pdf_pages(merged_path, int(total_pages))
                         job["status"] = f"user uploading complete book {index}/{len(books)}"
                         caption = f"<b>{html.escape(title)}</b>\\nComplete book · {total_pages} pages"
                         if await user_uploader.upload(merged_path, chat, caption):
@@ -679,7 +696,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
         if job.get("cancelled"):
             job["status"] = "cancelled"
             return
-        job["status"] = "done"
+        job["status"] = "done" if not job["failed_parts"] and not job["skipped_books"] else "partial"
         job["current_book"] = ""
         job["current_pages"] = ""
         await tg.send_message(
