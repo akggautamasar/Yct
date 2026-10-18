@@ -661,6 +661,10 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             job["status"] = f"user upload unavailable; bot fallback {index}/{len(books)}"
                             for saved_start, saved_end, saved_path in staged:
                                 await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
+                except Exception as merge_error:
+                    job["status"] = f"complete PDF unavailable; bot fallback {index}/{len(books)}"
+                    for saved_start, saved_end, saved_path in staged:
+                        await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
                 finally:
                     for _, _, part in staged:
                         try:
