@@ -17,7 +17,7 @@ PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 SITE_PASSWORD = os.environ.get("SITE_PASSWORD", "")
 
 # --- Tuning ---
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))   # concurrent page fetches
+MAX_WORKERS = max(2, min(12, int(os.environ.get("MAX_WORKERS", "8"))))   # concurrent page fetches
 PAGE_RETRY  = int(os.environ.get("PAGE_RETRY", "5"))
 REQ_DELAY   = float(os.environ.get("REQ_DELAY", "0.15"))
 TG_MAX_MB   = int(os.environ.get("TG_MAX_MB", "45"))    # Telegram bot upload cap ~50MB
