@@ -33,6 +33,52 @@ import telegram as tg
 
 app = FastAPI(title="YCT Downloader")
 
+# Distributed queue API. Uses the same password gate as the rest of the site.
+class DistributedExportRequest(BaseModel):
+    book_id: int
+    title: str
+    start_page: int
+    end_page: int
+
+@app.post("/api/distributed/export")
+async def distributed_export(req: DistributedExportRequest):
+    import httpx
+    url = os.getenv("YCT_DISPATCH_URL", "").rstrip("/")
+    token = os.getenv("YCT_DISPATCH_TOKEN", "")
+    if not url or not token:
+        raise HTTPException(503, "Distributed dispatcher not configured")
+    if req.book_id < 1 or req.start_page < 1 or req.end_page < req.start_page or req.end_page - req.start_page > 199:
+        raise HTTPException(400, "Invalid page range (maximum 200 pages)")
+    async with httpx.AsyncClient(timeout=25) as client:
+        try:
+            result = await client.post(url + "/jobs", headers={"Authorization": "Bearer " + token}, json=req.model_dump())
+            result.raise_for_status()
+            return result.json()
+        except httpx.HTTPError:
+            raise HTTPException(502, "Dispatcher unavailable or authentication rejected")
+
+@app.get("/api/distributed/jobs/{job_id}")
+async def distributed_job_status(job_id: str):
+    import httpx
+    import uuid
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid job ID")
+    url = os.getenv("YCT_DISPATCH_URL", "").rstrip("/")
+    token = os.getenv("YCT_DISPATCH_TOKEN", "")
+    if not url or not token:
+        raise HTTPException(503, "Distributed dispatcher not configured")
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            result = await client.get(url + "/jobs/" + job_id, headers={"Authorization": "Bearer " + token})
+            result.raise_for_status()
+            return result.json()
+        except httpx.HTTPError:
+            raise HTTPException(502, "Dispatcher unavailable")
+
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------- Site password gate ----------------
