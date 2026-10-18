@@ -66,7 +66,7 @@ const id=Number(document.getElementById('book').value),start=Number(document.get
 if(!Number.isInteger(id)||id<1||start<1||end<start||end-start>19)throw Error('Use a valid book and 1–20 pages');
 const r=await fetch('/api/distributed/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({book_id:id,title:'Book '+id,start_page:start,end_page:end})});
 const data=await r.json();if(!r.ok)throw Error(JSON.stringify(data));out.textContent='Queued: '+data.id;
-let attempts=0;const poll=async()=>{if(++attempts>120)return;try{const x=await fetch('/api/distributed/jobs/'+data.id);const j=(await x.json()).job;out.textContent='Job: '+data.id+'\nStatus: '+(j?.status||'unknown')+'\nAttempts: '+(j?.attempts||0)+'\n'+(j?.result||'');if(j?.status==='done'||j?.status==='failed')return;}catch(e){out.textContent=e.message;}setTimeout(poll,5000)};poll();
+let attempts=0;const poll=async()=>{if(++attempts>120)return;try{const x=await fetch('/api/distributed/jobs/'+data.id);const j=(await x.json()).job;out.textContent='Job: '+data.id+'\\nStatus: '+(j?.status||'unknown')+'\\nAttempts: '+(j?.attempts||0)+'\\n'+(j?.result||'');if(j?.status==='done'||j?.status==='failed')return;}catch(e){out.textContent=e.message;}setTimeout(poll,5000)};poll();
 }catch(e){out.textContent='Error: '+e.message}finally{btn.disabled=false}};
 </script></body></html>""")
 
