@@ -356,7 +356,7 @@ BATCH_JOBS: dict[str, dict] = {}
 _resource_lock = asyncio.Lock()
 
 
-def start_category_archive(category_name: str, books: list[dict]) -> str:
+def start_category_archive(category_name: str, books: list[dict], resume_book: int = 1, resume_page: int = 1) -> str:
     batch_id = uuid.uuid4().hex[:10]
     job = {
         "id": batch_id, "title": category_name or "All categories",
@@ -364,7 +364,7 @@ def start_category_archive(category_name: str, books: list[dict]) -> str:
         "done_pages": 0, "total_pages": 0, "uploaded_parts": 0,
         "current_book": "", "current_pages": "", "skipped_books": 0,
         "skipped_details": [], "failed_parts": 0, "error": None,
-        "created_at": int(time.time()), "cancelled": False,
+        "created_at": int(time.time()), "cancelled": False,\n        "resume_book": resume_book, "resume_page": resume_page,
     }
     BATCH_JOBS[batch_id] = job
     asyncio.create_task(_process_category_archive(batch_id, [dict(b) for b in books]))
@@ -419,7 +419,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             chat,
         )
 
-        for index, book in enumerate(books, 1):
+        for index, book in enumerate(books, 1):\n            if index < job["resume_book"]:\n                job["done_books"] = index\n                continue
             if job.get("cancelled"):
                 job["status"] = "cancelled"
                 await tg.send_message(
@@ -459,7 +459,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
 
             chunk = max(1, min(config.CHUNK_PAGES, 40))
             book_had_upload_failure = False
-            for start in range(1, int(total_pages) + 1, chunk):
+            for start in range(1, int(total_pages) + 1, chunk):\n                if index == job["resume_book"] and start + chunk - 1 < job["resume_page"]:\n                    continue
                 if job.get("cancelled"):
                     job["status"] = "cancelled"
                     await tg.send_message(
