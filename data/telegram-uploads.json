@@ -45,6 +45,15 @@
       "method": "telegram_user",
       "uploaded_at": 1792321964,
       "chat_id": "7441256901"
+    },
+    "7441256901:2094:complete:224": {
+      "book_id": 2094,
+      "title": "RRB NTPC CBT Stage 1 Practice Book Hindi Medium 2025",
+      "start_page": 1,
+      "end_page": 224,
+      "method": "telegram_user",
+      "uploaded_at": 1792322409,
+      "chat_id": "7441256901"
     }
   }
 }
