@@ -27,6 +27,8 @@ import scraper
 import pdfbuilder
 import telegram as tg
 import checkpoint
+import user_uploader
+from pypdf import PdfWriter
 
 
 def _safe_filename(name: str, fallback: str) -> str:
@@ -426,6 +428,34 @@ async def _process_category_archive(batch_id: str, books: list[dict]):
         await _run_category_telegram_export(batch_id, books)
 
 
+async def _send_bot_chunk(job, chat, book_id, title, index, total_books, start, end, pdf_path):
+    pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
+    try:
+        for part_number, part_path in enumerate(pdf_parts, 1):
+            await _wait_if_paused(job)
+            if job.get("cancelled"):
+                return False
+            key = checkpoint.part_key(chat, book_id, start, end, part_number)
+            if await checkpoint.has_part(key):
+                continue
+            caption = f"<b>{html.escape(title)}</b>\\nBook {index}/{total_books} · pages {start}-{end}"
+            if len(pdf_parts) > 1:
+                caption += f" · file {part_number}/{len(pdf_parts)}"
+            job["status"] = f"bot uploading {index}/{total_books} · pages {start}-{end}"
+            if not await tg.send_document(part_path, caption, chat):
+                raise RuntimeError(f"Bot upload failed for {title}, pages {start}-{end}")
+            if checkpoint.enabled():
+                await checkpoint.mark_part(key, {"book_id": book_id, "title": title,
+                    "start_page": start, "end_page": end, "part_number": part_number,
+                    "uploaded_at": int(time.time()), "chat_id": str(chat), "method": "bot"})
+            job["uploaded_parts"] += 1
+        return True
+    finally:
+        for part in pdf_parts:
+            if part != pdf_path and os.path.exists(part):
+                os.remove(part)
+
+
 async def _run_category_telegram_export(batch_id: str, books: list[dict]):
     job = BATCH_JOBS[batch_id]
     chat = config.TG_CHAT_ID
@@ -487,6 +517,11 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
 
             chunk = max(1, min(config.CHUNK_PAGES, 40))
             book_had_upload_failure = False
+            # Disk cap protects Render free instance; retain only bounded batches.
+            full_mode = user_uploader.configured() and not (index == job["resume_book"] and job["resume_page"] > 1)
+            max_book_bytes = max(40, int(os.getenv("TG_FULL_BOOK_MAX_MB", "250"))) * 1048576
+            staged = []
+            staged_bytes = 0
             for start in range(1, int(total_pages) + 1, chunk):
                 await _wait_if_paused(job)
                 if index == job["resume_book"] and start + chunk - 1 < job["resume_page"]:
@@ -523,6 +558,19 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
                             job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
+                        continue
+
+                    if full_mode:
+                        staged_path = os.path.join(config.WORK_DIR, f"stage_{batch_id}_{book_id}_{start}_{end}.pdf")
+                        os.replace(pdf_path, staged_path)
+                        staged.append((start, end, staged_path))
+                        staged_bytes += os.path.getsize(staged_path)
+                        if staged_bytes > max_book_bytes:
+                            full_mode = False
+                            for saved_start, saved_end, saved_path in staged:
+                                await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
+                                os.remove(saved_path)
+                            staged.clear()
                         continue
 
                     pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
@@ -578,6 +626,49 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         pass
                     gc.collect()
 
+            if staged:
+                merged_path = os.path.join(config.WORK_DIR, f"complete_{batch_id}_{book_id}.pdf")
+                try:
+                    await _wait_if_paused(job)
+                    if job.get("cancelled"):
+                        job["status"] = "cancelled"
+                        return
+                    full_key = f"{chat}:{book_id}:complete:{total_pages}"
+                    if await checkpoint.has_part(full_key):
+                        job["status"] = f"already uploaded complete book {index}/{len(books)}"
+                    else:
+                        job["status"] = f"merging complete book {index}/{len(books)}"
+                        writer = PdfWriter()
+                        try:
+                            for _, _, part in staged:
+                                writer.append(part)
+                            with open(merged_path, "wb") as output:
+                                writer.write(output)
+                        finally:
+                            writer.close()
+                            del writer
+                            gc.collect()
+                        job["status"] = f"user uploading complete book {index}/{len(books)}"
+                        caption = f"<b>{html.escape(title)}</b>\\nComplete book · {total_pages} pages"
+                        if await user_uploader.upload(merged_path, chat, caption):
+                            if checkpoint.enabled():
+                                await checkpoint.mark_part(full_key, {
+                                    "book_id": book_id, "title": title, "start_page": 1,
+                                    "end_page": total_pages, "method": "telegram_user",
+                                    "uploaded_at": int(time.time()), "chat_id": str(chat)})
+                            job["uploaded_parts"] += 1
+                        else:
+                            job["status"] = f"user upload unavailable; bot fallback {index}/{len(books)}"
+                            for saved_start, saved_end, saved_path in staged:
+                                await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
+                finally:
+                    for _, _, part in staged:
+                        try:
+                            os.remove(part)
+                        except OSError:
+                            pass
+                    if os.path.exists(merged_path):
+                        os.remove(merged_path)
             if not book_had_upload_failure:
                 job["done_books"] = index
 
