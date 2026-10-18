@@ -26,6 +26,7 @@ import config
 import scraper
 import pdfbuilder
 import telegram as tg
+import checkpoint
 
 
 def _safe_filename(name: str, fallback: str) -> str:
@@ -503,6 +504,10 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         caption = f"<b>{html.escape(title)}</b>\nBook {index}/{len(books)} · pages {start}-{end}"
                         if len(pdf_parts) > 1:
                             caption += f" · file {part_number}/{len(pdf_parts)}"
+                        key = checkpoint.part_key(chat, book_id, start, end, part_number)
+                        if await checkpoint.has_part(key):
+                            job["uploaded_parts"] += 1
+                            continue
                         sent = await tg.send_document(part_path, caption, chat)
                         if not sent:
                             job["failed_parts"] += 1
@@ -511,6 +516,14 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                                 f"Telegram upload failed for {title}, pages {start}-{end}. "
                                 "Check bot permissions, chat ID, and Telegram file-size limits."
                             )
+                        if checkpoint.enabled():
+                            await checkpoint.mark_part(key, {
+                                "book_id": book_id, "title": title,
+                                "start_page": start, "end_page": end,
+                                "part_number": part_number,
+                                "uploaded_at": int(time.time()),
+                                "chat_id": str(chat),
+                            })
                         job["uploaded_parts"] += 1
                         if part_path != pdf_path:
                             try:
