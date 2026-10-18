@@ -18,6 +18,15 @@
       "part_number": 1,
       "uploaded_at": 1792308673,
       "chat_id": "7441256901"
+    },
+    "7441256901:2110:complete:240": {
+      "book_id": 2110,
+      "title": "RRB NTPC CBT Stage 1 Practice Book English Medium 2025",
+      "start_page": 1,
+      "end_page": 240,
+      "method": "telegram_user",
+      "uploaded_at": 1792311421,
+      "chat_id": "7441256901"
     }
   }
 }
