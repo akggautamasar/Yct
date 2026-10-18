@@ -1916,6 +1916,23 @@ async function downloadSelectedCategory() {
   if (!confirm('Send ' + books.length + ' books from "' + category +
       '" to Telegram one book/page-part at a time? No large ZIP will be created on Render. ' +
       'A free Render restart can stop the current run, but files already uploaded remain in Telegram.')) return;
+  const resumeText = prompt('Start from which book number? Enter 1 for a new export. For the interrupted RRB export, enter 92.', '1');
+  if (resumeText === null) return;
+  const resume_book = Number(resumeText);
+  if (!Number.isInteger(resume_book) || resume_book < 1 || resume_book > books.length) {
+    categoryDownloadMessage('Invalid book number. Choose 1–' + books.length);
+    return;
+  }
+  let resume_page = 1;
+  if (resume_book > 1) {
+    const pageText = prompt('Start at which page of book ' + resume_book + '? For the interrupted upload, enter 161. Use 1 to repeat this book.', '1');
+    if (pageText === null) return;
+    resume_page = Number(pageText);
+    if (!Number.isInteger(resume_page) || resume_page < 1) {
+      categoryDownloadMessage('Invalid starting page.');
+      return;
+    }
+  }
   const button = $('#downloadCategory');
   button.disabled = true;
   categoryDownloadMessage('Starting Telegram export…');
@@ -1923,7 +1940,7 @@ async function downloadSelectedCategory() {
     const response = await fetch('/api/category-download', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({category_name: category, books})
+      body: JSON.stringify({category_name: category, books, resume_book, resume_page})
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || 'Could not start export');
