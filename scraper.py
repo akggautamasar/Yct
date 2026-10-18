@@ -68,26 +68,41 @@ async def get_categories() -> dict[int, str]:
 
 
 async def get_books_in_category(cat_id: int) -> list[dict]:
+    """Find book detail links without depending on a particular card layout."""
+    from urllib.parse import urljoin, urlparse
     c = await get_client()
     page = await c.get(f"{config.BASE_URL}/ebook/{cat_id}")
+    page.raise_for_status()
+    if "/login" in urlparse(str(page.url)).path.lower():
+        raise RuntimeError("YCT redirected category request to login")
     soup = BeautifulSoup(page.text, "html.parser")
-    imgs = [i.get("src", "") for i in soup.find_all("img")
-            if "cover_image" in i.get("src", "")]
-    links = [a.get("href", "") for a in soup.find_all("a", href=True)
-             if "ebook-detail" in a.get("href", "")]
     books = []
-    for idx, href in enumerate(links):
-        m = re.search(r"/ebook-detail/(\d+)", href)
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = urljoin(str(page.url), a["href"])
+        path = urlparse(href).path.rstrip("/")
+        m = re.search(r"/ebook-detail/(\d+)$", path, re.I)
         if not m:
             continue
-        books.append({"detail_id": int(m.group(1)),
-                      "cover": imgs[idx] if idx < len(imgs) else ""})
+        detail_id = int(m.group(1))
+        if detail_id in seen:
+            continue
+        seen.add(detail_id)
+        img = a.find("img") or (a.parent.find("img") if a.parent else None)
+        cover = urljoin(str(page.url), img.get("src", "")) if img and img.get("src") else ""
+        books.append({"detail_id": detail_id, "cover": cover})
+    if not books:
+        raise RuntimeError(f"No book detail links found for category {cat_id}; upstream layout, access or category may have changed")
     return books
 
 
 async def get_book_details(detail_id: int) -> tuple[str, int | None]:
+    from urllib.parse import urljoin, urlparse
     c = await get_client()
     page = await c.get(f"{config.BASE_URL}/ebook-detail/{detail_id}")
+    page.raise_for_status()
+    if "/login" in urlparse(str(page.url)).path.lower():
+        raise RuntimeError("YCT redirected book detail request to login")
     soup = BeautifulSoup(page.text, "html.parser")
     name = ""
     for h3 in soup.find_all("h3"):
@@ -102,13 +117,18 @@ async def get_book_details(detail_id: int) -> tuple[str, int | None]:
                 name = all_h3[i - 1].get_text(strip=True)
                 break
     if not name:
-        name = f"Book {detail_id}"
+        name = (soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else "") or f"Book {detail_id}"
     book_id = None
     for a in soup.find_all("a", href=True):
-        m = re.search(r"/readbook/(\d+)", a.get("href", ""))
+        path = urlparse(urljoin(str(page.url), a["href"])).path
+        m = re.search(r"/readbook/(\d+)", path, re.I)
         if m:
             book_id = int(m.group(1))
             break
+    if book_id is None:
+        m = re.search(r'["\']?(?:readbook|book_id|bookId)["\']?\s*[:=/]\s*["\']?(\d+)', page.text, re.I)
+        if m:
+            book_id = int(m.group(1))
     return name, book_id
 
 
