@@ -470,6 +470,20 @@ async def api_category_download_cancel(batch_id: str):
     return {"ok": True}
 
 
+@app.post("/api/category-download/{batch_id}/pause")
+async def api_category_download_pause(batch_id: str):
+    if not jobs.pause_category_archive(batch_id):
+        raise HTTPException(404, "Export is no longer active")
+    return {"ok": True, "status": "pausing"}
+
+
+@app.post("/api/category-download/{batch_id}/resume")
+async def api_category_download_resume(batch_id: str):
+    if not jobs.resume_category_archive(batch_id):
+        raise HTTPException(404, "Export is no longer active")
+    return {"ok": True, "status": "resuming"}
+
+
 class DownloadReq(BaseModel):
     book_id: int
     title: str = "Untitled"
