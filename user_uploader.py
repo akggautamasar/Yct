@@ -35,7 +35,12 @@ async def upload(path, chat_id, caption):
             return False
         # Telethon accepts numeric peer IDs; account must have access to the target chat.
         target = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
-        entity = await client.get_input_entity(target)
+        try:
+            entity = await client.get_input_entity(target)
+        except (ValueError, TypeError):
+            # A fresh StringSession has no entity cache. Populate it from dialogs.
+            await client.get_dialogs(limit=200)
+            entity = await client.get_input_entity(target)
         await client.send_file(entity, path, caption=caption, parse_mode="html",
                                force_document=True)
         return True
