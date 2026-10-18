@@ -33,6 +33,27 @@ Datacenter IPs can be blocked or throttled by source websites. If categories can
 - PDF scratch/output files use `/tmp`; treat it as ephemeral.
 - Completed PDFs may be sent to Telegram; Render local files are not permanent storage.
 
+## Persistent Telegram export checkpoints
+
+Render free-instance files are ephemeral. For durable part-level JSON checkpoints,
+create a fine-grained GitHub personal access token restricted to this repository
+with **Contents: Read and write**, and add it in Render Environment as
+`CHECKPOINT_GITHUB_TOKEN`. Optional: `CHECKPOINT_GITHUB_REPO` (defaults to
+`akggautamasar/Yct`), `CHECKPOINT_GITHUB_PATH` (defaults to
+`data/telegram-uploads.json`).
+
+Each successfully sent PDF part is written to the repository JSON file.
+Future exports skip parts with the same Telegram chat, book ID, page range,
+and split-part number. The first interrupted export predates this feature:
+manually resume RRB from book 92, page 161. Historical Telegram messages
+cannot be reconstructed through the Bot API.
+
+**Caveats:** Without the token, export continues without durable checkpointing.
+A crash after Telegram accepts a file but before the JSON commit can cause
+a duplicate on retry. GitHub commits per part can be slow and the JSON ledger
+will grow over time; a dedicated database is preferable at larger scale.
+Do not place the token in source control.
+
 ## Deploy
 
 1. On Render, create/update the web service from this repository.
