@@ -449,7 +449,9 @@ async def api_category_download(req: CategoryArchiveReq):
             })
     if not books:
         raise HTTPException(400, "No valid books were provided")
-    if req.resume_book < 1 or req.resume_book > len(books) or req.resume_page < 1:\n        raise HTTPException(400, "Invalid resume book/page")\n    batch_id = jobs.start_category_archive(req.category_name[:120], books, req.resume_book, req.resume_page)
+    if req.resume_book < 1 or req.resume_book > len(books) or req.resume_page < 1:
+        raise HTTPException(400, "Invalid resume book/page")
+    batch_id = jobs.start_category_archive(req.category_name[:120], books, req.resume_book, req.resume_page)
     return {"job_id": batch_id, "total_books": len(books), "destination": "Telegram"}
 
 
