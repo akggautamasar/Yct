@@ -1906,8 +1906,14 @@ async function pollCategoryDownload() {
       nextDelay = 5000;
     }
   } catch (error) {
-    categoryDownloadMessage('Reconnecting… if Render restarted, files already sent remain in Telegram; start again after checking the channel.');
-    nextDelay = 10000;
+    const message = String(error?.message || error || '');
+    if (/404|not found|Render may have restarted|Category export job not found/i.test(message)) {
+      clearBatchTracking();
+      categoryDownloadMessage('Previous export stopped when Render restarted. The old job is no longer running. Start a new export and use the saved JSON checkpoints to skip previously recorded PDF parts.');
+    } else {
+      categoryDownloadMessage('Temporarily unable to check export: ' + message + '. Retrying…');
+      nextDelay = 10000;
+    }
   } finally {
     batchPollBusy = false;
     clearTimeout(batchPollTimer);
