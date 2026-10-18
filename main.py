@@ -57,18 +57,49 @@ async def distributed_export(req: DistributedExportRequest):
         except httpx.HTTPError:
             raise HTTPException(502, "Dispatcher unavailable or authentication rejected")
 
-@app.get("/distributed-test", response_class=HTMLResponse)
-async def distributed_test_page():
-    return HTMLResponse("""<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>YCT Distributed Test</title><style>body{font:16px system-ui;background:#101827;color:#fff;padding:24px;max-width:480px;margin:auto}button,input{font:inherit;padding:12px;border-radius:8px;margin:6px 0}input{width:100%;box-sizing:border-box}button{background:#39c8f5;border:0;font-weight:bold}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h2>Distributed PDF Test</h2><p>Queue a small book sample for Telegram delivery.</p><label>Book ID<input id="book" type="number" value="378" min="1"></label><label>First page<input id="first" type="number" value="1" min="1"></label><label>Last page<input id="last" type="number" value="5" min="1"></label><button id="go">Send to queue</button><pre id="status">Ready</pre><script>
-const out=document.getElementById('status'),btn=document.getElementById('go');
-btn.onclick=async()=>{btn.disabled=true;out.textContent='Submitting...';try{
-const id=Number(document.getElementById('book').value),start=Number(document.getElementById('first').value),end=Number(document.getElementById('last').value);
-if(!Number.isInteger(id)||id<1||start<1||end<start||end-start>19)throw Error('Use a valid book and 1–20 pages');
-const r=await fetch('/api/distributed/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({book_id:id,title:'Book '+id,start_page:start,end_page:end})});
-const data=await r.json();if(!r.ok)throw Error(JSON.stringify(data));out.textContent='Queued: '+data.id;
-let attempts=0;const poll=async()=>{if(++attempts>120)return;try{const x=await fetch('/api/distributed/jobs/'+data.id);const j=(await x.json()).job;out.textContent='Job: '+data.id+'\\nStatus: '+(j?.status||'unknown')+'\\nAttempts: '+(j?.attempts||0)+'\\n'+(j?.result||'');if(j?.status==='done'||j?.status==='failed')return;}catch(e){out.textContent=e.message;}setTimeout(poll,5000)};poll();
-}catch(e){out.textContent='Error: '+e.message}finally{btn.disabled=false}};
-</script></body></html>""")
+@app.api_route("/distributed-test", methods=["GET", "POST"], response_class=HTMLResponse)
+async def distributed_test_page(request: Request):
+    """Mobile-first server-rendered form; works without JavaScript."""
+    from html import escape
+    from urllib.parse import parse_qs
+    import httpx
+    message = ""
+    job_id = request.query_params.get("job", "")
+    if request.method == "POST":
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        try:
+            book = int(form.get("book", ["378"])[0])
+            first = int(form.get("first", ["1"])[0])
+            last = int(form.get("last", ["5"])[0])
+            if book < 1 or first < 1 or last < first or last - first > 19:
+                raise ValueError("Enter a valid book ID and a range of 1 to 20 pages")
+            url = os.getenv("YCT_DISPATCH_URL", "").rstrip("/")
+            token = os.getenv("YCT_DISPATCH_TOKEN", "")
+            if not url or not token:
+                raise ValueError("Dispatcher URL or token is missing in Render Environment")
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(url + "/jobs", headers={"Authorization": "Bearer " + token}, json={"book_id":book,"title":f"Book {book}","start_page":first,"end_page":last})
+                if response.status_code != 201:
+                    raise ValueError(f"Dispatcher HTTP {response.status_code}: {response.text[:200]}")
+                job_id = response.json()["id"]
+                message = "Job submitted successfully"
+        except (ValueError, httpx.HTTPError, KeyError) as exc:
+            message = "Submission error: " + str(exc)
+    if job_id and not message:
+        try:
+            import uuid
+            uuid.UUID(job_id)
+            url = os.getenv("YCT_DISPATCH_URL", "").rstrip("/")
+            token = os.getenv("YCT_DISPATCH_TOKEN", "")
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url + "/jobs/" + job_id, headers={"Authorization": "Bearer " + token})
+                response.raise_for_status()
+                item = response.json().get("job") or {}
+                message = "Status: " + str(item.get("status", "unknown")) + " | Attempts: " + str(item.get("attempts", 0)) + " | Result: " + str(item.get("result") or "")
+        except Exception as exc:
+            message = "Status check error: " + str(exc)
+    refresh = '<meta http-equiv="refresh" content="8">' if job_id and not message.startswith(("Submission error", "Status check error")) else ""
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}<title>Distributed PDF Test</title><style>body{{font:16px system-ui;background:#101827;color:#fff;padding:24px;max-width:480px;margin:auto}}button,input{{font:inherit;padding:12px;border-radius:8px;margin:6px 0}}input{{width:100%;box-sizing:border-box}}button{{background:#39c8f5;border:0;font-weight:bold}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style></head><body><h2>Distributed PDF Test</h2><p>Test a small PDF export to Telegram. No JavaScript required.</p><form method="post" action="/distributed-test"><label>Book ID<input name="book" type="number" value="378" min="1" required></label><label>First page<input name="first" type="number" value="1" min="1" required></label><label>Last page<input name="last" type="number" value="5" min="1" required></label><button type="submit">Send to queue</button></form><pre>{escape(message or "Ready")}</pre>{'<p>Job ID: '+escape(job_id)+'</p><a style="color:#39c8f5" href="/distributed-test?job='+escape(job_id)+'">Refresh status</a>' if job_id else ''}</body></html>""")
 
 @app.get("/api/distributed/jobs/{job_id}")
 async def distributed_job_status(job_id: str):
