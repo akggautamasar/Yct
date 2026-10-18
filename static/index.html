@@ -857,6 +857,11 @@ input[type=checkbox]:checked { transform: scale(1.1); }
       </div>
       <div class="category-download-tools">
         <button class="btn btn-primary" id="downloadCategory" type="button">↓ Send category to Telegram</button>
+        <div id="categoryJobControls" style="display:none;gap:8px;flex-wrap:wrap;margin:10px 0">
+          <button class="btn btn-ghost" id="pauseCategory" type="button">⏸ Pause</button>
+          <button class="btn btn-ghost" id="resumeCategory" type="button" style="display:none">▶ Resume</button>
+          <button class="btn btn-ghost" id="cancelCategory" type="button">✕ Cancel</button>
+        </div>
         <div class="category-download-status" id="categoryDownloadStatus" aria-live="polite"></div>
       </div>
       <div class="books-hd">
@@ -1850,12 +1855,19 @@ function categoryDownloadMessage(message) {
 }
 function startBatchPolling(id) {
   activeBatchId = id;
+  updateCategoryControls(false);
   try { localStorage.setItem(BATCH_STORAGE_KEY, id); } catch {}
   pollCategoryDownload();
+}
+function updateCategoryControls(paused) {
+  $('#categoryJobControls').style.display = activeBatchId ? 'flex' : 'none';
+  $('#pauseCategory').style.display = paused ? 'none' : '';
+  $('#resumeCategory').style.display = paused ? '' : 'none';
 }
 function clearBatchTracking() {
   try { localStorage.removeItem(BATCH_STORAGE_KEY); } catch {}
   activeBatchId = null;
+  updateCategoryControls(false);
   $('#downloadCategory').disabled = false;
 }
 async function pollCategoryDownload() {
@@ -1864,6 +1876,7 @@ async function pollCategoryDownload() {
   let nextDelay = 5000;
   try {
     const status = await api('/api/category-download/' + encodeURIComponent(activeBatchId));
+    updateCategoryControls(Boolean(status.paused));
     const done = Number(status.done_books || 0);
     const total = Number(status.total_books || 0);
     const pages = Number(status.done_pages || 0);
@@ -1881,6 +1894,8 @@ async function pollCategoryDownload() {
       categoryDownloadMessage('Cancelled · ' + parts +
         ' PDF file(s) already saved to Telegram. Those files remain available.');
       clearBatchTracking();
+    } else if (status.paused) {
+      categoryDownloadMessage('Paused · ' + done + '/' + total + ' books processed · ' + parts + ' PDF parts uploaded. Tap Resume to continue.');
     } else {
       const current = status.current_book ? ' · ' + status.current_book : '';
       const pageText = status.current_pages ? ' · pages ' + status.current_pages : '';
@@ -1957,12 +1972,29 @@ health();
 loadCats();
 pollJobs();
 $('#loadBooks').onclick = () => loadBooks(false);
+async function controlCategory(action) {
+  if (!activeBatchId) return;
+  if (action === 'cancel' && !confirm('Cancel this export? Files already uploaded to Telegram will remain.')) return;
+  try {
+    const response = await fetch('/api/category-download/' + encodeURIComponent(activeBatchId) + (action === 'cancel' ? '' : '/' + action), {method: action === 'cancel' ? 'DELETE' : 'POST'});
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || 'Request failed');
+    categoryDownloadMessage(action === 'cancel' ? 'Cancelling after current operation…' : action === 'pause' ? 'Pausing after current operation…' : 'Resuming…');
+    if (action !== 'cancel') updateCategoryControls(action === 'pause');
+    pollCategoryDownload();
+  } catch (error) {
+    categoryDownloadMessage('Control error: ' + error.message);
+  }
+}
+$('#pauseCategory').addEventListener('click', () => controlCategory('pause'));
+$('#resumeCategory').addEventListener('click', () => controlCategory('resume'));
+$('#cancelCategory').addEventListener('click', () => controlCategory('cancel'));
 $('#downloadCategory').addEventListener('click', downloadSelectedCategory);
 $('#cat').addEventListener('change', () => loadBooks(false));
 try {
   const savedBatch = localStorage.getItem(BATCH_STORAGE_KEY);
   if (savedBatch) {
     activeBatchId = savedBatch;
+    updateCategoryControls(false);
     $('#downloadCategory').disabled = true;
     categoryDownloadMessage('Reconnecting to your category download…');
     pollCategoryDownload();
