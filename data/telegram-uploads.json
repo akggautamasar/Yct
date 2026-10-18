@@ -36,6 +36,15 @@
       "method": "telegram_user",
       "uploaded_at": 1792315702,
       "chat_id": "7441256901"
+    },
+    "7441256901:2095:complete:192": {
+      "book_id": 2095,
+      "title": "RRB STATIC GK 2025 TCS PATTERN",
+      "start_page": 1,
+      "end_page": 192,
+      "method": "telegram_user",
+      "uploaded_at": 1792321964,
+      "chat_id": "7441256901"
     }
   }
 }
