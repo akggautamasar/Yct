@@ -39,12 +39,38 @@ def build_lossless(folder: str, pdf_path: str) -> float:
     if not imgs:
         return 0.0
 
-    # Fast path: img2pdf embeds JPEG bytes directly, without expensive
-    # decode/re-encode or creating a temporary PDF for every page.
-    # Keep each batch bounded (category jobs use at most 40 pages).
+    # Keep original JPEGs and compatible PNGs untouched. Normalize only
+    # unsupported modes/16-bit PNGs, one page at a time (low peak RAM).
+    import img2pdf
+    normalized = []
+    temporary = []
     try:
+        for index, filename in enumerate(imgs):
+            path = os.path.join(folder, filename)
+            with Image.open(path) as im:
+                compatible = (
+                    im.mode in ("RGB", "L", "1")
+                    and (im.format == "JPEG" or
+                         (im.format == "PNG" and im.mode in ("RGB", "L", "1")))
+                )
+                if compatible:
+                    normalized.append(path)
+                    continue
+                tmp = os.path.join(folder, f"_normalized_{index:05d}.jpg")
+                if im.mode in ("RGBA", "LA") or (
+                    im.mode == "P" and "transparency" in im.info
+                ):
+                    rgba = im.convert("RGBA")
+                    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                    im = Image.alpha_composite(background, rgba).convert("RGB")
+                else:
+                    im = im.convert("RGB")
+                im.save(tmp, "JPEG", quality=90, optimize=False)
+                temporary.append(tmp)
+                normalized.append(tmp)
+
         with open(pdf_path, "wb") as output:
-            output.write(img2pdf.convert([os.path.join(folder, fn) for fn in imgs]))
+            output.write(img2pdf.convert(normalized))
         actual = len(PdfReader(pdf_path).pages)
         if actual != len(imgs):
             raise RuntimeError(f"Expected {len(imgs)} PDF pages, got {actual}")
@@ -55,6 +81,12 @@ def build_lossless(folder: str, pdf_path: str) -> float:
         except OSError:
             pass
         raise RuntimeError(f"PDF assembly failed: {exc}") from exc
+    finally:
+        for path in temporary:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _tesseract_ready() -> tuple[bool, list[str]]:
