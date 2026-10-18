@@ -574,7 +574,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                     else:
                         ok, skipped, failed = await fetch_batch(start, end, folder)
                     next_start = end + 1
-                    if next_start <= int(total_pages) and not job.get("cancelled"):
+                    if next_start <= int(total_pages) and not job.get("cancelled") and not job.get("paused"):
                         next_end = min(int(total_pages), next_start + chunk - 1)
                         next_folder = os.path.join(config.WORK_DIR, f"cat_{batch_id}_{book_id}_{next_start}_{next_end}")
                         prefetch = asyncio.create_task(fetch_batch(next_start, next_end, next_folder))
@@ -607,7 +607,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             staged.clear()
                         continue
 
-                    pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
+                    pdf_parts = await asyncio.to_thread(pdfbuilder.split_for_telegram, pdf_path)
                     for part_number, part_path in enumerate(pdf_parts, 1):
                         await _wait_if_paused(job)
                         if job.get("cancelled"):
@@ -661,7 +661,6 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                     gc.collect()
 
             if prefetch is not None:
-                # A cancellation or unexpected exit must not strand a task.
                 await prefetch
             if staged:
                 merged_path = os.path.join(config.WORK_DIR, f"{title}.pdf")
