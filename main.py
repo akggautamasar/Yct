@@ -57,6 +57,19 @@ async def distributed_export(req: DistributedExportRequest):
         except httpx.HTTPError:
             raise HTTPException(502, "Dispatcher unavailable or authentication rejected")
 
+@app.get("/distributed-test", response_class=HTMLResponse)
+async def distributed_test_page():
+    return HTMLResponse("""<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>YCT Distributed Test</title><style>body{font:16px system-ui;background:#101827;color:#fff;padding:24px;max-width:480px;margin:auto}button,input{font:inherit;padding:12px;border-radius:8px;margin:6px 0}input{width:100%;box-sizing:border-box}button{background:#39c8f5;border:0;font-weight:bold}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h2>Distributed PDF Test</h2><p>Queue a small book sample for Telegram delivery.</p><label>Book ID<input id="book" type="number" value="378" min="1"></label><label>First page<input id="first" type="number" value="1" min="1"></label><label>Last page<input id="last" type="number" value="5" min="1"></label><button id="go">Send to queue</button><pre id="status">Ready</pre><script>
+const out=document.getElementById('status'),btn=document.getElementById('go');
+btn.onclick=async()=>{btn.disabled=true;out.textContent='Submitting...';try{
+const id=Number(document.getElementById('book').value),start=Number(document.getElementById('first').value),end=Number(document.getElementById('last').value);
+if(!Number.isInteger(id)||id<1||start<1||end<start||end-start>19)throw Error('Use a valid book and 1–20 pages');
+const r=await fetch('/api/distributed/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({book_id:id,title:'Book '+id,start_page:start,end_page:end})});
+const data=await r.json();if(!r.ok)throw Error(JSON.stringify(data));out.textContent='Queued: '+data.id;
+let attempts=0;const poll=async()=>{if(++attempts>120)return;try{const x=await fetch('/api/distributed/jobs/'+data.id);const j=(await x.json()).job;out.textContent='Job: '+data.id+'\nStatus: '+(j?.status||'unknown')+'\nAttempts: '+(j?.attempts||0)+'\n'+(j?.result||'');if(j?.status==='done'||j?.status==='failed')return;}catch(e){out.textContent=e.message;}setTimeout(poll,5000)};poll();
+}catch(e){out.textContent='Error: '+e.message}finally{btn.disabled=false}};
+</script></body></html>""")
+
 @app.get("/api/distributed/jobs/{job_id}")
 async def distributed_job_status(job_id: str):
     import httpx
