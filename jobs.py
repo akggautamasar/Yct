@@ -366,7 +366,7 @@ def start_category_archive(category_name: str, books: list[dict], resume_book: i
         "current_book": "", "current_pages": "", "skipped_books": 0,
         "skipped_details": [], "failed_parts": 0, "error": None,
         "created_at": int(time.time()), "cancelled": False,
-        "resume_book": resume_book, "resume_page": resume_page,
+        "resume_book": resume_book, "resume_page": resume_page, "paused": False,
     }
     BATCH_JOBS[batch_id] = job
     asyncio.create_task(_process_category_archive(batch_id, [dict(b) for b in books]))
@@ -387,6 +387,28 @@ def cancel_category_archive(batch_id: str) -> bool:
     job["cancelled"] = True
     job["status"] = "cancelling"
     return True
+
+
+def pause_category_archive(batch_id: str) -> bool:
+    job = BATCH_JOBS.get(batch_id)
+    if not job or job.get("status") in ("done", "error", "cancelled", "cancelling"):
+        return False
+    job["paused"] = True
+    return True
+
+
+def resume_category_archive(batch_id: str) -> bool:
+    job = BATCH_JOBS.get(batch_id)
+    if not job or job.get("status") in ("done", "error", "cancelled", "cancelling"):
+        return False
+    job["paused"] = False
+    return True
+
+
+async def _wait_if_paused(job: dict):
+    while job.get("paused") and not job.get("cancelled"):
+        job["status"] = "paused"
+        await asyncio.sleep(1)
 
 
 def _category_skip(job: dict, detail: str):
@@ -422,6 +444,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
         )
 
         for index, book in enumerate(books, 1):
+            await _wait_if_paused(job)
             if index < job["resume_book"]:
                 job["done_books"] = index
                 continue
@@ -465,6 +488,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             chunk = max(1, min(config.CHUNK_PAGES, 40))
             book_had_upload_failure = False
             for start in range(1, int(total_pages) + 1, chunk):
+                await _wait_if_paused(job)
                 if index == job["resume_book"] and start + chunk - 1 < job["resume_page"]:
                     continue
                 if job.get("cancelled"):
@@ -503,6 +527,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
 
                     pdf_parts = pdfbuilder.split_for_telegram(pdf_path)
                     for part_number, part_path in enumerate(pdf_parts, 1):
+                        await _wait_if_paused(job)
                         if job.get("cancelled"):
                             job["status"] = "cancelled"
                             return
