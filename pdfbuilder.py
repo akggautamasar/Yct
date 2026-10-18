@@ -55,7 +55,7 @@ def build_lossless(folder: str, pdf_path: str) -> float:
                     im = Image.alpha_composite(bg, im).convert("RGB")
                 elif im.mode != "RGB":
                     im = im.convert("RGB")
-                im.save(tmp_jpg, format="JPEG", quality=92, subsampling=0, optimize=True)
+                im.save(tmp_jpg, format="JPEG", quality=90, subsampling=0, optimize=False)
 
             # --- one-page PDF from that JPEG ---
             with open(tmp_pdf, "wb") as f:
@@ -68,8 +68,8 @@ def build_lossless(folder: str, pdf_path: str) -> float:
                     writer.add_page(pg)
             del reader
             added += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"PDF page conversion failed for {fn}: {exc}") from exc
         finally:
             # delete the page image too — we don't need it after this
             for t in (tmp_jpg, tmp_pdf):
@@ -78,8 +78,8 @@ def build_lossless(folder: str, pdf_path: str) -> float:
             try: os.remove(p)
             except: pass
 
-    if added == 0:
-        return 0.0
+    if added != len(imgs):
+        raise RuntimeError(f"PDF page count mismatch: {added}/{len(imgs)}")
 
     try:
         with open(pdf_path, "wb") as f:
