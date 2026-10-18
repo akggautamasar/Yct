@@ -250,7 +250,7 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
             if resp.status_code in (429, 503):
-                await asyncio.sleep(min(15 * attempt, 90))
+                await asyncio.sleep(min(2 ** attempt, 12))
                 continue
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
