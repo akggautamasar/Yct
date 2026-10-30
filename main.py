@@ -238,7 +238,7 @@ async def healthz():
         "YCT_PASSWORD": config.PASSWORD,
     }.items() if not v]
     missing_all = config.validate()
-    return {"ok": not missing_critical, "missing_env": missing_all, "build": "reader-diagnostic-20261031"}
+    return {"ok": not missing_critical, "missing_env": missing_all, "build": "render-auth-20261031"}
 
 
 @app.api_route("/ping", methods=["GET", "HEAD"])
@@ -456,6 +456,19 @@ def _cache_page(key, value):
 async def _fetch_preview_page(book_id: int, page: int):
     await _ensure_upstream_login()
     return await scraper.fetch_page_bytes(book_id, page)
+
+
+@app.get("/api/diagnostics/login")
+async def api_login_diagnostic():
+    """Report only sanitized YCT handshake metadata for troubleshooting."""
+    try:
+        accepted = await asyncio.wait_for(scraper.login(), timeout=35)
+    except asyncio.TimeoutError:
+        return {"build": "render-auth-20261031", "login_accepted": False,
+                "diagnostic": {"state": "network_timeout"}}
+    return {"build": "render-auth-20261031",
+            "login_accepted": accepted,
+            "diagnostic": dict(scraper._last_login_result)}
 
 
 @app.get("/api/diagnostics/page")
