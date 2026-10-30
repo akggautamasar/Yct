@@ -312,7 +312,7 @@ async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
             if resp.status_code in (429, 503):
-                await asyncio.sleep(min(2 ** attempt, 12))
+                await asyncio.sleep(min(15 * attempt, 90))
                 continue
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
@@ -342,7 +342,7 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
             if resp.status_code in (429, 503):
-                await asyncio.sleep(min(2 ** attempt, 12))
+                await asyncio.sleep(min(15 * attempt, 90))
                 continue
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
@@ -353,6 +353,7 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
                 out = png if ext == "png" else jpg
                 with open(out, "wb") as f:
                     f.write(data)
+                await asyncio.sleep(max(0, config.REQ_DELAY))
                 return page, "ok"
             await asyncio.sleep(min(2 ** attempt, 10))
         except Exception:
