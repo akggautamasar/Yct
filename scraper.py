@@ -5,6 +5,7 @@ A single shared client holds the ci_session cookie after login.
 """
 import re
 import base64
+import json
 import asyncio
 import httpx
 from bs4 import BeautifulSoup
@@ -242,6 +243,23 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
                 return base64.b64decode(b64), ext
             except Exception:
                 return None
+    # Also accept JSON-wrapped image bytes returned to an authenticated reader.
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            envelope = json.loads(text)
+            if isinstance(envelope, dict):
+                candidates = [envelope.get(k) for k in ("image", "data", "page", "src", "base64")]
+                for wrapper in ("result", "response"):
+                    nested = envelope.get(wrapper)
+                    if isinstance(nested, dict):
+                        candidates.extend(nested.get(k) for k in ("image", "data", "page", "src", "base64"))
+                for candidate in candidates:
+                    if isinstance(candidate, str) and len(candidate) > 100 and not candidate.lstrip().startswith(("{", "[")):
+                        found = _decode_page(candidate.encode("utf-8"), candidate)
+                        if found:
+                            return found
+        except (ValueError, TypeError):
+            pass
     # Some reader endpoints return a bare base64 image rather than a data URI.
     # Decode only plausible image payloads, and validate the magic bytes to
     # avoid treating an HTML error/login page as a valid book page.
