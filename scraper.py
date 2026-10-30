@@ -208,13 +208,13 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
     # Some reader endpoints return a bare base64 image rather than a data URI.
     # Decode only plausible image payloads, and validate the magic bytes to
     # avoid treating an HTML error/login page as a valid book page.
-    candidate = text.strip().strip('"\\'')
-    if candidate and len(candidate) > 100 and re.fullmatch(r"[A-Za-z0-9+/=\\s]+", candidate):
+    candidate = text.strip().strip('"').strip("'")
+    if candidate and len(candidate) > 100 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", candidate):
         try:
             raw = base64.b64decode("".join(candidate.split()), validate=True)
-            if raw[:4] == b"\\x89PNG":
+            if raw[:4] == b"\x89PNG":
                 return raw, "png"
-            if raw[:2] == b"\\xff\\xd8":
+            if raw[:2] == b"\xff\xd8":
                 return raw, "jpg"
         except (ValueError, base64.binascii.Error):
             pass
