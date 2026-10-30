@@ -214,8 +214,9 @@ async def _process(jid: str):
         pages = list(range(start, end + 1))
         job["total"] = len(pages)
 
-        if not await scraper.has_access(book_id):
-            raise RuntimeError("no access to this book (check account)")
+        accessible, access_reason = await scraper.check_page_access(book_id, start)
+        if not accessible:
+            raise RuntimeError(access_reason)
 
         chunk = max(1, config.CHUNK_PAGES)
         batches = [pages[i:i + chunk] for i in range(0, len(pages), chunk)]
