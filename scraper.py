@@ -317,7 +317,15 @@ async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
                 continue
-            decoded = _decode_page(resp.content, resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else "")
+            body = resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else ""
+            if attempt == 1 and (
+                "/login" in str(resp.url).lower()
+                or ("<form" in body[:8000].lower() and "password" in body[:8000].lower())
+                or resp.status_code in (401, 403)
+            ):
+                if await login(force=True):
+                    continue
+            decoded = _decode_page(resp.content, body)
             if decoded:
                 return decoded
             await asyncio.sleep(min(2 ** attempt, 10))
@@ -347,7 +355,15 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
                 continue
-            decoded = _decode_page(resp.content, resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else "")
+            body = resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else ""
+            if attempt == 1 and (
+                "/login" in str(resp.url).lower()
+                or ("<form" in body[:8000].lower() and "password" in body[:8000].lower())
+                or resp.status_code in (401, 403)
+            ):
+                if await login(force=True):
+                    continue
+            decoded = _decode_page(resp.content, body)
             if decoded:
                 data, ext = decoded
                 out = png if ext == "png" else jpg
