@@ -83,7 +83,7 @@ async def get_books_in_category(cat_id: int) -> list[dict]:
         path = urlparse(href).path.rstrip("/")
         m = re.search(r"/ebook-detail/(\d+)$", path, re.I)
         if not m:
-            m = re.search(r"(?:ebook-detail/|ebook-detail\\\\/)(\\d+)", a.get("onclick", ""), re.I)
+            m = re.search(r"ebook-detail/(\d+)", a.get("onclick", ""), re.I)
         if not m:
             continue
         detail_id = int(m.group(1))
