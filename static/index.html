@@ -1623,12 +1623,35 @@ function readerShowPage(n) {
     _readerSpin(true);
     els.canvas.style.display = 'none';
     const img = els.img;
-    img.onload = () => { _readerSpin(false); img.style.display = 'block'; };
-    img.onerror = () => { _readerSpin(false); img.style.display='none'; els.error.style.display='block'; els.error.textContent='Page unavailable.'; };
-    img.src = `/api/books/${reader.bookId}/page/${n}`;
-    // warm the next page in the browser's own HTTP cache — single small
-    // image, no extra app-side memory held
-    if (n + 1 <= reader.total) { const pre = new Image(); pre.src = `/api/books/${reader.bookId}/page/${n+1}`; }
+    const expectedBook = reader.bookId;
+    img.onload = () => {
+      if (reader.bookId !== expectedBook || reader.page !== n) return;
+      _readerSpin(false);
+      img.style.display = 'block';
+    };
+    img.onerror = async () => {
+      if (reader.bookId !== expectedBook || reader.page !== n) return;
+      _readerSpin(false);
+      img.style.display = 'none';
+      els.error.style.display = 'block';
+      els.error.textContent = 'Page unavailable. Checking the YCT response…';
+      try {
+        const check = await fetch(`/api/books/${expectedBook}/page/${n}/check`, {
+          credentials: 'same-origin', headers: {Accept: 'application/json'}
+        });
+        const details = await check.json();
+        if (reader.bookId === expectedBook && reader.page === n) {
+          els.error.textContent = details.detail || 'YCT did not supply a readable page image.';
+        }
+      } catch (error) {
+        if (reader.bookId === expectedBook && reader.page === n) {
+          els.error.textContent = 'Page unavailable. Could not check the upstream response.';
+        }
+      }
+    };
+    img.src = `/api/books/${expectedBook}/page/${n}`;
+    // Do not prefetch another page until the upstream reader is reliable.
+
   } else if (reader.mode === 'pdf' && reader.pdfDoc) {
     renderPdfPage(n);
   }
