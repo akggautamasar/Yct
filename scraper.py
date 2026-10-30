@@ -187,8 +187,44 @@ async def _page_exists(book_id: int, page: int) -> bool:
         return False
 
 
+async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
+    """Verify actual page bytes; retry an expired session once.
+
+    Never infer a subscription denial from an unrecognized response.
+    """
+    c = await get_client()
+    url = f"{config.BASE_URL}/getPage/{book_id}/{page}"
+    headers = {**config.HEADERS, "Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
+    for attempt in range(2):
+        try:
+            r = await c.get(url, headers=headers)
+            body = r.text.strip() if r.content[:1] not in (b"\\x89", b"\\xff") else ""
+            if r.status_code == 200 and _decode_page(r.content, body):
+                return True, "ok"
+            redirected = "/login" in str(r.url).lower()
+            login_html = ("<form" in body.lower() and "password" in body.lower())
+            unauthorized = r.status_code in (401, 403) or redirected or login_html
+            if unauthorized and attempt == 0:
+                global _session_cookie
+                _session_cookie = None
+                c.cookies.delete("ci_session") if "ci_session" in c.cookies else None
+                if await login():
+                    continue
+            if unauthorized:
+                return False, "YCT rejected the page request or redirected to login; check the upstream account/session"
+            if r.status_code == 404:
+                return False, "YCT page endpoint returned 404; book ID or page endpoint may be incorrect"
+            if r.status_code in (429, 500, 502, 503, 504):
+                return False, f"YCT page endpoint temporarily unavailable (HTTP {r.status_code})"
+            return False, f"YCT page returned HTTP {r.status_code} with no recognized image; verify reader response format"
+        except httpx.HTTPError as exc:
+            return False, f"YCT page request failed ({type(exc).__name__})"
+    return False, "YCT page could not be accessed after session refresh"
+
+
 async def has_access(book_id: int) -> bool:
-    return await _page_exists(book_id, 1)
+    ok, _ = await check_page_access(book_id)
+    return ok
 
 
 def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
