@@ -59,7 +59,9 @@ async def login(force: bool = False) -> bool:
 
 
 def _is_img(b: bytes) -> bool:
-    return b[:4] == b"\x89PNG" or b[:2] == b"\xff\xd8"
+    return (b[:4] == b"\x89PNG" or b[:2] == b"\xff\xd8"
+            or (b[:4] == b"RIFF" and b[8:12] == b"WEBP")
+            or b[:6] in (b"GIF87a", b"GIF89a"))
 
 
 async def get_categories() -> dict[int, str]:
@@ -241,16 +243,29 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
         return content, "png"
     if content[:2] == b"\xff\xd8":
         return content, "jpg"
+    if (content[:4] == b"RIFF" and content[8:12] == b"WEBP") or content[:6] in (b"GIF87a", b"GIF89a"):
+        try:
+            from io import BytesIO
+            from PIL import Image
+            with Image.open(BytesIO(content)) as image:
+                image.load()
+                output = BytesIO()
+                image.convert("RGB").save(output, format="JPEG", quality=95)
+                return output.getvalue(), "jpg"
+        except (ValueError, OSError):
+            return None
     if text.lstrip().lower().startswith(("<!doctype", "<html", "<head", "<body")):
         return None
     for pfx, ext in [("data:image/png;base64,", "png"),
-                     ("data:image/jpeg;base64,", "jpg")]:
+                     ("data:image/jpeg;base64,", "jpg"),
+                     ("data:image/webp;base64,", "jpg"),
+                     ("data:image/gif;base64,", "jpg")]:
         if pfx in text:
             b64 = text.split(pfx, 1)[1].split('"')[0].split("'")[0].split("<")[0].strip()
             try:
                 decoded = base64.b64decode(b64, validate=True)
                 if _is_img(decoded):
-                    return decoded, ("png" if decoded[:4] == b"\x89PNG" else "jpg")
+                    return _decode_page(decoded, "")
                 return None
             except Exception:
                 return None
@@ -278,10 +293,8 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
     if candidate and len(candidate) > 100 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", candidate):
         try:
             raw = base64.b64decode("".join(candidate.split()), validate=True)
-            if raw[:4] == b"\x89PNG":
-                return raw, "png"
-            if raw[:2] == b"\xff\xd8":
-                return raw, "jpg"
+            if _is_img(raw):
+                return _decode_page(raw, "")
         except (ValueError, base64.binascii.Error):
             pass
     return None
