@@ -249,8 +249,9 @@ async def page_diagnostic(book_id: int, page: int = 1) -> dict:
 
     media = response.headers.get("content-type", "").split(";", 1)[0].lower()
     data = response.content
-    text = "" if _is_img(data) else response.text[:4000]
-    decoded = _decode_page(data, text)
+    body = "" if _is_img(data) else response.text
+    text = body[:4000]
+    decoded = _decode_page(data, body)
     end_path = urlparse(str(response.url)).path
     is_login_path = end_path.rstrip("/").lower().endswith("/login")
     login_form = "<form" in text.lower() and "password" in text.lower()
