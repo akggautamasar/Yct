@@ -71,7 +71,7 @@ async def get_books_in_category(cat_id: int) -> list[dict]:
     """Find book detail links without depending on a particular card layout."""
     from urllib.parse import urljoin, urlparse
     c = await get_client()
-    page = await c.get(f"{config.BASE_URL}/ebook/{cat_id}")
+    page = await c.get(f"{config.BASE_URL}/ebook/{cat_id}", headers={"Referer": f"{config.BASE_URL}/ebook"})
     page.raise_for_status()
     if "/login" in urlparse(str(page.url)).path.lower():
         raise RuntimeError("YCT redirected category request to login")
@@ -83,6 +83,8 @@ async def get_books_in_category(cat_id: int) -> list[dict]:
         path = urlparse(href).path.rstrip("/")
         m = re.search(r"/ebook-detail/(\d+)$", path, re.I)
         if not m:
+            m = re.search(r"(?:ebook-detail/|ebook-detail\\\\/)(\\d+)", a.get("onclick", ""), re.I)
+        if not m:
             continue
         detail_id = int(m.group(1))
         if detail_id in seen:
@@ -92,6 +94,12 @@ async def get_books_in_category(cat_id: int) -> list[dict]:
         cover = urljoin(str(page.url), img.get("src", "")) if img and img.get("src") else ""
         books.append({"detail_id": detail_id, "cover": cover})
     if not books:
+        # A successful HTTP response may still be a login form or an error page.
+        # Never silently treat that as an empty category.
+        if soup.select_one('input[type="password"]') or "/login" in str(page.url).lower():
+            global _session_cookie
+            _session_cookie = None
+            raise RuntimeError(f"YCT session expired while loading category {cat_id}")
         raise RuntimeError(f"No book detail links found for category {cat_id}; upstream layout, access or category may have changed")
     return books
 
