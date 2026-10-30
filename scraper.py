@@ -232,6 +232,63 @@ async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
     return False, "YCT page access failed after session refresh"
 
 
+async def page_diagnostic(book_id: int, page: int = 1) -> dict:
+    """Diagnose one protected page without returning content, cookies or URLs with secrets."""
+    from urllib.parse import urlparse
+    client = await get_client()
+    try:
+        response = await client.get(
+            f"{config.BASE_URL}/getPage/{book_id}/{page}",
+            headers={**config.HEADERS,
+                     "Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"},
+            timeout=15.0,
+        )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "category": "network_error",
+                "error_type": type(exc).__name__}
+
+    media = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    data = response.content
+    text = "" if _is_img(data) else response.text[:4000]
+    decoded = _decode_page(data, text)
+    end_path = urlparse(str(response.url)).path
+    is_login_path = end_path.rstrip("/").lower().endswith("/login")
+    login_form = "<form" in text.lower() and "password" in text.lower()
+    kind = "image" if decoded else (
+        "html" if "<html" in text[:400].lower() or "<!doctype" in text[:400].lower()
+        else "json" if text.lstrip().startswith(("{", "["))
+        else "empty" if not data
+        else "other"
+    )
+    result = {
+        "ok": bool(decoded),
+        "status": response.status_code,
+        "content_type": media[:60] or "unknown",
+        "bytes": len(data),
+        "category": "login_required" if is_login_path or login_form else kind,
+        "redirected_to_login": is_login_path,
+        "redirects": len(response.history),
+        "session_cookie_present": bool(client.cookies.get("ci_session")),
+    }
+    if kind == "json":
+        try:
+            parsed = json.loads(response.text)
+            if isinstance(parsed, dict):
+                result["json_keys"] = sorted(str(k)[:40] for k in parsed)[:12]
+                status = parsed.get("status", parsed.get("success"))
+                if isinstance(status, (bool, int)):
+                    result["json_success"] = bool(status)
+        except (ValueError, TypeError):
+            pass
+    if response.status_code in (401, 403):
+        result["category"] = "access_denied"
+    elif response.status_code == 429:
+        result["category"] = "rate_limited"
+    elif response.status_code >= 500:
+        result["category"] = "upstream_error"
+    return result
+
+
 async def has_access(book_id: int) -> bool:
     ok, _ = await check_page_access(book_id)
     return ok
