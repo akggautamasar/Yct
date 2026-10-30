@@ -458,6 +458,21 @@ async def _fetch_preview_page(book_id: int, page: int):
     return await scraper.fetch_page_bytes(book_id, page)
 
 
+@app.get("/api/books/{book_id}/page/{page}/check")
+async def api_book_page_check(book_id: int, page: int):
+    """Safe preview diagnostic: never returns credentials or page content."""
+    if book_id < 1 or page < 1:
+        raise HTTPException(400, "book_id and page must be positive")
+    await _ensure_upstream_login()
+    try:
+        accessible, reason = await asyncio.wait_for(
+            scraper.check_page_access(book_id, page), timeout=35
+        )
+    except asyncio.TimeoutError:
+        return {"ok": False, "detail": "YCT page request timed out"}
+    return {"ok": accessible, "detail": reason}
+
+
 @app.get("/api/books/{book_id}/page/{page}")
 async def api_book_page(book_id: int, page: int, request: Request):
     if book_id < 1 or page < 1:
