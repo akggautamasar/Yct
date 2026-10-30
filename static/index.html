@@ -1636,12 +1636,16 @@ function readerShowPage(n) {
       els.error.style.display = 'block';
       els.error.textContent = 'Page unavailable. Checking the YCT response…';
       try {
-        const check = await fetch(`/api/books/${expectedBook}/page/${n}/check`, {
+        const check = await fetch(`/api/diagnostics/page?book_id=${expectedBook}&page=${n}`, {
           credentials: 'same-origin', headers: {Accept: 'application/json'}
         });
         const details = await check.json();
         if (reader.bookId === expectedBook && reader.page === n) {
-          els.error.textContent = details.detail || 'YCT did not supply a readable page image.';
+          const label = String(details.category || 'unreadable response').replace(/_/g, ' ');
+          const status = details.status ? 'HTTP ' + details.status : 'unknown HTTP status';
+          const mime = String(details.content_type || 'unknown');
+          const bytes = Number.isFinite(details.bytes) ? details.bytes + ' bytes' : '';
+          els.error.textContent = `YCT page error: ${label} · ${status} · ${mime}${bytes ? ' · ' + bytes : ''}. Please share this error to troubleshoot.`;
         }
       } catch (error) {
         if (reader.bookId === expectedBook && reader.page === n) {
