@@ -1336,19 +1336,26 @@ async function selectBook(el) {
     : `<div class="sel-info-fallback">📚</div>`;
   $('#selCoverContainer').innerHTML = selCoverHtml;
   $('#selMeta').innerHTML = `<span class="spin" style="font-size:12px; margin-right:6px;">&#8987;</span> Checking pages&hellip;`;
-  $('#previewBtn').disabled = true;
+  // The page-count endpoint is advisory. It must not prevent page-one preview.
+  $('#previewBtn').disabled = false;
+  $('#end').placeholder = 'all';
 
   openSheet();
 
+  const expectedBookId = selected.book_id;
   try {
-    const p = await api('/api/pages?book_id='+selected.book_id);
-    selected.total = p.total_pages;
-    $('#selMeta').innerHTML = `&#128196; ${p.total_pages||'Unknown'} pages &nbsp;&middot;&nbsp; ID ${selected.book_id}`;
-    if (p.total_pages) $('#end').placeholder=`all (${p.total_pages})`;
-    $('#previewBtn').disabled = !p.total_pages;
+    const p = await api('/api/pages?book_id='+expectedBookId);
+    if (!selected || selected.book_id !== expectedBookId) return;
+    const count = Number(p.total_pages);
+    selected.total = Number.isInteger(count) && count > 0 ? count : null;
+    $('#selMeta').innerHTML = selected.total
+      ? `&#128196; ${selected.total} pages &nbsp;&middot;&nbsp; ID ${expectedBookId}`
+      : `&#128196; Page count unavailable &nbsp;&middot;&nbsp; ID ${expectedBookId}`;
+    $('#end').placeholder = selected.total ? `all (${selected.total})` : 'enter last page';
   } catch {
-    $('#selMeta').innerHTML = `ID ${selected.book_id}`;
-    $('#previewBtn').disabled = true;
+    if (!selected || selected.book_id !== expectedBookId) return;
+    $('#selMeta').innerHTML = `Page count unavailable &nbsp;&middot;&nbsp; ID ${expectedBookId}`;
+    $('#end').placeholder = 'enter last page';
   }
 }
 
