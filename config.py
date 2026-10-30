@@ -9,7 +9,9 @@ PASSWORD = os.environ.get("YCT_PASSWORD", "")
 TG_TOKEN   = os.environ.get("TG_TOKEN", "")        # bot token from @BotFather
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")      # channel/chat where PDFs are sent
 # Secret path segment for the webhook so randoms can't hit it
-TG_WEBHOOK_SECRET = os.environ.get("TG_WEBHOOK_SECRET", "hook")
+# Empty by default: a shared literal like "hook" would make the public webhook
+# path guessable. When unset (or too short) the webhook rejects every update.
+TG_WEBHOOK_SECRET = os.environ.get("TG_WEBHOOK_SECRET", "")
 # Public URL of this Render service, e.g. https://yct-xyz.onrender.com
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 

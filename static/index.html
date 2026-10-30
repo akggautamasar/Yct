@@ -1092,8 +1092,12 @@ function moveContentToMain() {
   while (sheet.firstChild) main.appendChild(sheet.firstChild);
 }
 
+let sheetCloseTimer = null;
 function openSheet() {
   if (!isMobile()) return;
+  // Cancel a pending close: otherwise the delayed moveContentToMain() below
+  // fired after re-opening and left the sheet empty.
+  clearTimeout(sheetCloseTimer);
   moveContentToSheet();
   document.getElementById('sheet').classList.add('show');
   document.getElementById('sheetBackdrop').classList.add('show');
@@ -1101,7 +1105,11 @@ function openSheet() {
 function closeSheet() {
   document.getElementById('sheet').classList.remove('show');
   document.getElementById('sheetBackdrop').classList.remove('show');
-  setTimeout(moveContentToMain, 300);
+  clearTimeout(sheetCloseTimer);
+  sheetCloseTimer = setTimeout(() => {
+    if (document.getElementById('sheet').classList.contains('show')) return;
+    moveContentToMain();
+  }, 300);
 }
 document.getElementById('sheetClose').onclick = closeSheet;
 document.getElementById('sheetBackdrop').onclick = closeSheet;
@@ -1278,6 +1286,9 @@ async function loadBooks(forceRefresh = false) {
   button.innerHTML = '<span class="spin">&#8987;</span>';
   const cacheKey = cat === 'all' ? 'all-books' : 'category.' + cat;
   const cached = forceRefresh ? null : readLocalCache(cacheKey);
+  if (forceRefresh) {
+    try { localStorage.removeItem(CATALOG_CACHE_PREFIX + cacheKey); } catch {}
+  }
   if (Array.isArray(cached) && cached.length) {
     renderBooks(cached, cat);
     button.disabled = false;
@@ -1361,19 +1372,34 @@ async function selectBook(el) {
 
 async function go({telegram, browser}) {
   if (!selected) { alert('Select a book first.'); return; }
+  const start = +$('#start').value || 1;
+  const end = $('#end').value ? (+$('#end').value) : null;
+  if (start < 1) { alert('Start page must be 1 or greater.'); return; }
+  if (end !== null && (!Number.isInteger(end) || end < start)) {
+    alert('Last page must be a whole number at or after the start page.'); return;
+  }
+  if (end !== null && selected.total && end > selected.total) {
+    alert(`This book has ${selected.total} pages; last page cannot be ${end}.`); return;
+  }
   const body = {
     book_id:selected.book_id, title:selected.title, cover:selected.cover,
-    start:+$('#start').value||1,
-    end:$('#end').value?(+$('#end').value):null,
+    start:start,
+    end:Number.isInteger(end) ? end : null,
     do_ocr:$('#ocr').checked,
     total_pages:selected.total||null,
     browser_download:browser,
     telegram:telegram,
   };
+  const buttons = ['#goTelegram','#goBrowser','#goBoth'].map(id => $(id));
+  buttons.forEach(b => { if (b) b.disabled = true; });
   try {
     await api('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     pollJobs();
-  } catch(e) { alert('Failed to queue: '+e.message); }
+  } catch(e) {
+    alert('Failed to queue: '+e.message);
+  } finally {
+    buttons.forEach(b => { if (b) b.disabled = false; });
+  }
 }
 
 function jobCard(jb) {
@@ -1384,7 +1410,7 @@ function jobCard(jb) {
   const barCls = isDone?'done':isErr?'err':'';
   const pillCls= pillClass(jb.status);
   const ts = new Date(jb.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  const errMsg = isErr?`<div class="err-msg">&#9888; Failed: ${jb.error||'Unknown error'}</div>`:'';
+  const errMsg = isErr?`<div class="err-msg">&#9888; Failed: ${safeText(jb.error||'Unknown error')}</div>`:'';
   const totalParts = jb.total_parts||0;
   const partsDone  = jb.parts_done||0;
   const partsSummary = totalParts>1
@@ -1392,6 +1418,7 @@ function jobCard(jb) {
 
   let dlBlock='';
   const cp = jb.current_part;
+  const safeName = safeText((cp && cp.name) || jb.title || '');
   if (cp && !cp.consumed && jb.browser_download) {
     const lbl = totalParts>1
       ?`Part ${cp.part_num} of ${cp.total_parts} &mdash; pages ${cp.pages}`
@@ -1402,8 +1429,8 @@ function jobCard(jb) {
   <div class="gate-label">&#128196; <b>${lbl}</b></div>
   <div class="gate-hint">Save the file to your device, then tap <b>Done</b>.</div>
   <div class="gate-btns">
-    <a href="/api/jobs/${jb.id}/download" download="${cp.name}" class="btn btn-dl">&#8595; Download${totalParts>1?' Part '+cp.part_num:''}</a>
-    <button class="btn btn-ghost" onclick="openPdfReader('${jb.id}','${(cp.name||jb.title||'').replace(/'/g,"\\'")}')">&#128214; Read</button>
+    <a href="/api/jobs/${jb.id}/download" download="${safeName}" class="btn btn-dl">&#8595; Download${totalParts>1?' Part '+cp.part_num:''}</a>
+    <button class="btn btn-ghost" onclick="openPdfReader('${jb.id}', decodeURIComponent('${encodeURIComponent(cp.name||jb.title||'')}'))">&#128214; Read</button>
     <button class="btn btn-ok" onclick="confirmPart('${jb.id}')">&#10003; ${nxtLbl}</button>
   </div>
 </div>`;
@@ -1416,7 +1443,7 @@ function jobCard(jb) {
   return `
 <div class="job-card" id="job-${jb.id}">
   <div class="title-row">
-    <div class="book-title">${jb.title}</div>
+    <div class="book-title">${safeText(jb.title)}</div>
     <span class="status-pill ${pillCls}">${statusLabel}</span>
     <button class="job-cancel" title="Cancel &amp; delete this job" onclick="cancelJob('${jb.id}')">&times;</button>
   </div>
@@ -1431,7 +1458,11 @@ function jobCard(jb) {
 
 async function confirmPart(jid) {
   try {
-    await fetch(`/api/jobs/${jid}/confirm`,{method:'POST'});
+    const response = await fetch(`/api/jobs/${jid}/confirm`,{method:'POST'});
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || ('HTTP ' + response.status));
+    }
     pollJobs();
   } catch(e) { alert('Error: '+e.message); }
 }
@@ -1661,6 +1692,15 @@ function readerShowPage(n) {
       }
     };
     img.src = `/api/books/${expectedBook}/page/${n}`;
+    // A cached or already-complete image may fire "load" before the handler is
+    // attached (and before this line runs), which left the spinner spinning
+    // forever over a perfectly rendered page.
+    if (img.complete && img.naturalWidth > 0 && img.getAttribute('src') === img.src) {
+      if (reader.bookId === expectedBook && reader.page === n) {
+        _readerSpin(false);
+        img.style.display = 'block';
+      }
+    }
     // Do not prefetch another page until the upstream reader is reliable.
 
   } else if (reader.mode === 'pdf' && reader.pdfDoc) {
@@ -2011,7 +2051,9 @@ renderMain();
 health();
 loadCats();
 pollJobs();
-$('#loadBooks').onclick = () => loadBooks(false);
+// "Reload" must actually reload: bypass both the browser-local copy and the
+// server-side 30-minute cache instead of replaying what is already cached.
+$('#loadBooks').onclick = () => loadBooks(true);
 async function controlCategory(action) {
   if (!activeBatchId) return;
   if (action === 'cancel' && !confirm('Cancel this export? Files already uploaded to Telegram will remain.')) return;

@@ -14,7 +14,6 @@ import httpx
 import scraper
 import pdfbuilder
 import telegram
-import config
 
 URL = os.getenv("YCT_DISPATCH_URL", "").rstrip("/")
 TOKEN = os.getenv("YCT_DISPATCH_TOKEN", "")
@@ -50,6 +49,8 @@ async def run_job(client, job):
             if len(PdfReader(pdf_path).pages) != len(pages):
                 raise RuntimeError("PDF page count mismatch")
             parts = await asyncio.to_thread(pdfbuilder.split_for_telegram, pdf_path)
+            if not parts:
+                raise RuntimeError("PDF produced no uploadable parts")
             for index, part in enumerate(parts, 1):
                 caption = f"{job['title']} | pages {first}-{last} | part {index}/{len(parts)}"
                 result = await telegram.send_document(part, caption=caption)
