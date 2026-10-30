@@ -16,6 +16,7 @@ _client: httpx.AsyncClient | None = None
 _login_lock = asyncio.Lock()
 _session_cookie: str | None = None
 _login_complete = False
+_last_login_result: dict = {"state": "not_attempted"}
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -36,13 +37,14 @@ async def login(force: bool = False) -> bool:
     YCT may embed sign-in forms on pages after login. The session also
     may not use a cookie named ci_session, so neither proves failure.
     """
-    global _session_cookie, _login_complete
+    global _session_cookie, _login_complete, _last_login_result
     async with _login_lock:
         if _login_complete and not force:
             return True
         _session_cookie = None
         _login_complete = False
         if not config.EMAIL or not config.PASSWORD:
+            _last_login_result = {"state": "missing_configuration"}
             return False
         c = await get_client()
         if force:
@@ -56,13 +58,16 @@ async def login(force: bool = False) -> bool:
                          "Referer": f"{config.BASE_URL}/login",
                          "Content-Type": "application/x-www-form-urlencoded"},
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            _last_login_result = {"state": "network_error", "error_type": type(exc).__name__}
             return False
         if r.status_code >= 400:
+            _last_login_result = {"state": "upstream_http_error", "http_status": r.status_code}
             return False
         from urllib.parse import urlparse
         final_path = urlparse(str(r.url)).path.rstrip("/").lower()
         if final_path.endswith("/login"):
+            _last_login_result = {"state": "returned_to_login", "http_status": r.status_code}
             return False
 
         # A JSON error is authoritative, unlike a login form in page chrome.
@@ -74,10 +79,13 @@ async def login(force: bool = False) -> bool:
             if isinstance(result, dict):
                 status = result.get("success", result.get("status"))
                 if status is False or status == 0 or status == "false":
+                    _last_login_result = {"state": "upstream_json_rejected", "http_status": r.status_code}
                     return False
 
         _session_cookie = c.cookies.get("ci_session")
         _login_complete = True
+        _last_login_result = {"state": "handshake_accepted", "http_status": r.status_code,
+                              "cookie_present": bool(_session_cookie)}
         return True
 
 
