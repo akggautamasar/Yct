@@ -238,7 +238,7 @@ async def healthz():
         "YCT_PASSWORD": config.PASSWORD,
     }.items() if not v]
     missing_all = config.validate()
-    return {"ok": not missing_critical, "missing_env": missing_all}
+    return {"ok": not missing_critical, "missing_env": missing_all, "build": "reader-diagnostic-20261031"}
 
 
 @app.api_route("/ping", methods=["GET", "HEAD"])
@@ -456,6 +456,20 @@ def _cache_page(key, value):
 async def _fetch_preview_page(book_id: int, page: int):
     await _ensure_upstream_login()
     return await scraper.fetch_page_bytes(book_id, page)
+
+
+@app.get("/api/diagnostics/page")
+async def api_page_diagnostic(book_id: int = 1686, page: int = 1):
+    """Inspect a single page request; response contains no book content or credentials."""
+    if book_id < 1 or page < 1:
+        raise HTTPException(400, "book_id and page must be positive")
+    await _ensure_upstream_login()
+    try:
+        result = await asyncio.wait_for(scraper.page_diagnostic(book_id, page), timeout=20)
+    except asyncio.TimeoutError:
+        result = {"ok": False, "category": "network_timeout"}
+    return {"build": "reader-diagnostic-20261031", "book_id": book_id,
+            "page": page, **result}
 
 
 @app.get("/api/books/{book_id}/page/{page}/check")
