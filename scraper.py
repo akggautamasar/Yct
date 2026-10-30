@@ -187,8 +187,40 @@ async def _page_exists(book_id: int, page: int) -> bool:
         return False
 
 
+async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
+    """Check a real page image and distinguish upstream errors from access denial."""
+    client = await get_client()
+    url = f"{config.BASE_URL}/getPage/{book_id}/{page}"
+    headers = {**config.HEADERS, "Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
+    for attempt in range(2):
+        try:
+            response = await client.get(url, headers=headers)
+            payload = response.text.strip() if response.content[:1] not in (bytes([137]), bytes([255])) else ""
+            if response.status_code == 200 and _decode_page(response.content, payload):
+                return True, "ok"
+            login_page = "/login" in str(response.url).lower() or (
+                "<form" in payload.lower() and "password" in payload.lower()
+            )
+            if response.status_code in (401, 403) or login_page:
+                if attempt == 0:
+                    global _session_cookie
+                    _session_cookie = None
+                    if await login():
+                        continue
+                return False, "YCT rejected the page request; verify account access or session"
+            if response.status_code == 404:
+                return False, "YCT page endpoint returned 404; check book ID and reader endpoint"
+            if response.status_code in (429, 500, 502, 503, 504):
+                return False, f"YCT page endpoint unavailable (HTTP {response.status_code})"
+            return False, f"YCT returned HTTP {response.status_code} without a recognized page image"
+        except httpx.HTTPError as exc:
+            return False, f"YCT page request failed ({type(exc).__name__})"
+    return False, "YCT page access failed after session refresh"
+
+
 async def has_access(book_id: int) -> bool:
-    return await _page_exists(book_id, 1)
+    ok, _ = await check_page_access(book_id)
+    return ok
 
 
 def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
