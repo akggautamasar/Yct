@@ -29,13 +29,18 @@ async def get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def login() -> bool:
-    """Log in and cache the ci_session cookie. Idempotent + concurrency-safe."""
+async def login(force: bool = False) -> bool:
+    """Log in with the configured account, refreshing the session when asked."""
     global _session_cookie
     async with _login_lock:
-        if _session_cookie:
+        if _session_cookie and not force:
             return True
+        _session_cookie = None
+        if not config.EMAIL or not config.PASSWORD:
+            return False
         c = await get_client()
+        if force:
+            c.cookies.clear()
         await c.get(f"{config.BASE_URL}/login")
         r = await c.post(
             f"{config.BASE_URL}/LoginController/login1",
@@ -44,10 +49,13 @@ async def login() -> bool:
                      "Referer": f"{config.BASE_URL}/login",
                      "Content-Type": "application/x-www-form-urlencoded"},
         )
-        if "login" in str(r.url).lower():
+        path = str(r.url).split("?", 1)[0].rstrip("/").lower()
+        if r.status_code >= 400 or path.endswith("/login"):
+            return False
+        if "<form" in r.text.lower() and "password" in r.text.lower():
             return False
         _session_cookie = c.cookies.get("ci_session")
-        return True
+        return bool(_session_cookie)
 
 
 def _is_img(b: bytes) -> bool:
@@ -204,9 +212,7 @@ async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
             )
             if response.status_code in (401, 403) or login_page:
                 if attempt == 0:
-                    global _session_cookie
-                    _session_cookie = None
-                    if await login():
+                    if await login(force=True):
                         continue
                 return False, "YCT rejected the page request; verify account access or session"
             if response.status_code == 404:
