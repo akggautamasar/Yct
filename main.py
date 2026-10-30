@@ -22,6 +22,7 @@ import os
 import hmac
 import hashlib
 import asyncio
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
