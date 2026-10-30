@@ -48,8 +48,7 @@ async def login(force: bool = False) -> bool:
         if force:
             c.cookies.clear()
         try:
-            initial = await c.get(f"{config.BASE_URL}/login")
-            initial.raise_for_status()
+            await c.get(f"{config.BASE_URL}/login")
             r = await c.post(
                 f"{config.BASE_URL}/LoginController/login1",
                 data={"email": config.EMAIL, "password": config.PASSWORD},
