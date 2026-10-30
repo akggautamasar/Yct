@@ -15,6 +15,7 @@ import config
 _client: httpx.AsyncClient | None = None
 _login_lock = asyncio.Lock()
 _session_cookie: str | None = None
+_login_complete = False
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -30,32 +31,55 @@ async def get_client() -> httpx.AsyncClient:
 
 
 async def login(force: bool = False) -> bool:
-    """Log in with the configured account, refreshing the session when asked."""
-    global _session_cookie
+    """Follow the working Render login handshake without false negatives.
+
+    YCT may embed sign-in forms on pages after login. The session also
+    may not use a cookie named ci_session, so neither proves failure.
+    """
+    global _session_cookie, _login_complete
     async with _login_lock:
-        if _session_cookie and not force:
+        if _login_complete and not force:
             return True
         _session_cookie = None
+        _login_complete = False
         if not config.EMAIL or not config.PASSWORD:
             return False
         c = await get_client()
         if force:
             c.cookies.clear()
-        await c.get(f"{config.BASE_URL}/login")
-        r = await c.post(
-            f"{config.BASE_URL}/LoginController/login1",
-            data={"email": config.EMAIL, "password": config.PASSWORD},
-            headers={**config.HEADERS,
-                     "Referer": f"{config.BASE_URL}/login",
-                     "Content-Type": "application/x-www-form-urlencoded"},
-        )
-        path = str(r.url).split("?", 1)[0].rstrip("/").lower()
-        if r.status_code >= 400 or path.endswith("/login"):
+        try:
+            initial = await c.get(f"{config.BASE_URL}/login")
+            initial.raise_for_status()
+            r = await c.post(
+                f"{config.BASE_URL}/LoginController/login1",
+                data={"email": config.EMAIL, "password": config.PASSWORD},
+                headers={**config.HEADERS,
+                         "Referer": f"{config.BASE_URL}/login",
+                         "Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.HTTPError:
             return False
-        if "<form" in r.text.lower() and "password" in r.text.lower():
+        if r.status_code >= 400:
             return False
+        from urllib.parse import urlparse
+        final_path = urlparse(str(r.url)).path.rstrip("/").lower()
+        if final_path.endswith("/login"):
+            return False
+
+        # A JSON error is authoritative, unlike a login form in page chrome.
+        if "json" in r.headers.get("content-type", "").lower():
+            try:
+                result = r.json()
+            except ValueError:
+                result = None
+            if isinstance(result, dict):
+                status = result.get("success", result.get("status"))
+                if status is False or status == 0 or status == "false":
+                    return False
+
         _session_cookie = c.cookies.get("ci_session")
-        return bool(_session_cookie)
+        _login_complete = True
+        return True
 
 
 def _is_img(b: bytes) -> bool:
@@ -449,11 +473,12 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
 
 async def close_client():
     """Close the shared async client during graceful shutdown/redeploy."""
-    global _client, _session_cookie
+    global _client, _session_cookie, _login_complete
     if _client is not None:
         await _client.aclose()
         _client = None
     _session_cookie = None
+    _login_complete = False
 
 
 async def download_pages(book_id: int, pages: list[int], folder: str,
