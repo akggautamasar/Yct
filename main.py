@@ -341,7 +341,12 @@ async def api_books(cat: int | None = None, refresh: bool = False, all: bool = F
     async def resolve_category(category_id: int):
         async def produce():
             await _ensure_upstream_login()
-            raw_books = await scraper.get_books_in_category(category_id)
+            try:
+                raw_books = await scraper.get_books_in_category(category_id)
+            except (RuntimeError, httpx.HTTPError) as exc:
+                import logging
+                logging.getLogger(__name__).warning("YCT category %s unavailable: %s", category_id, exc)
+                raise HTTPException(502, f"Unable to load YCT category {category_id}; source session or layout may have changed") from exc
             semaphore = asyncio.Semaphore(4)
 
             async def resolve(book):
