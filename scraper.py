@@ -241,12 +241,17 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
         return content, "png"
     if content[:2] == b"\xff\xd8":
         return content, "jpg"
+    if text.lstrip().lower().startswith(("<!doctype", "<html", "<head", "<body")):
+        return None
     for pfx, ext in [("data:image/png;base64,", "png"),
                      ("data:image/jpeg;base64,", "jpg")]:
         if pfx in text:
             b64 = text.split(pfx, 1)[1].split('"')[0].split("'")[0].split("<")[0].strip()
             try:
-                return base64.b64decode(b64), ext
+                decoded = base64.b64decode(b64, validate=True)
+                if _is_img(decoded):
+                    return decoded, ("png" if decoded[:4] == b"\x89PNG" else "jpg")
+                return None
             except Exception:
                 return None
     # Also accept JSON-wrapped image bytes returned to an authenticated reader.
