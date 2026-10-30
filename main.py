@@ -215,9 +215,13 @@ async def shutdown():
 @app.on_event("startup")
 async def startup():
     jobs.start_worker()
-    if os.getenv("YCT_DISPATCH_URL") and os.getenv("YCT_DISPATCH_TOKEN"):
-        from distributed.executor import main as distributed_worker_main
-        app.state.distributed_worker = asyncio.create_task(distributed_worker_main())
+    # Keep the interactive server independent of optional distributed workers.
+    # A worker requires an explicit opt-in so old dispatch credentials cannot
+    # accidentally start background downloads on Koyeb's web instance.
+    if os.getenv("YCT_START_DISPATCH_WORKER", "").lower() in ("1", "true", "yes"):
+        if os.getenv("YCT_DISPATCH_URL") and os.getenv("YCT_DISPATCH_TOKEN"):
+            from distributed.executor import main as distributed_worker_main
+            app.state.distributed_worker = asyncio.create_task(distributed_worker_main())
     if config.PUBLIC_URL and config.TG_TOKEN:
         try:
             await tg.set_webhook()
