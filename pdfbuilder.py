@@ -41,17 +41,17 @@ def build_lossless(folder: str, pdf_path: str) -> float:
 
     # Keep original JPEGs and compatible PNGs untouched. Normalize only
     # unsupported modes/16-bit PNGs, one page at a time (low peak RAM).
-    import img2pdf
     normalized = []
     temporary = []
     try:
         for index, filename in enumerate(imgs):
             path = os.path.join(folder, filename)
             with Image.open(path) as im:
+                bits = im.info.get("bits", 8) if im.format == "PNG" else 8
                 compatible = (
                     im.mode in ("RGB", "L", "1")
-                    and (im.format == "JPEG" or
-                         (im.format == "PNG" and im.mode in ("RGB", "L", "1")))
+                    and bits <= 8
+                    and im.format in ("JPEG", "PNG")
                 )
                 if compatible:
                     normalized.append(path)
@@ -206,10 +206,17 @@ def split_for_telegram(pdf_path: str) -> list[str]:
         part_path = f"{base}_part{n}.pdf"
         while True:
             writer = PdfWriter()
-            for i in range(start, end):
-                writer.add_page(reader.pages[i])
-            with open(part_path, "wb") as f:
-                writer.write(f)
+            try:
+                for i in range(start, end):
+                    writer.add_page(reader.pages[i])
+                with open(part_path, "wb") as f:
+                    writer.write(f)
+            finally:
+                # Writers hold the whole part in memory; leaking them across
+                # batches is what pushed the 512 MB instance over the edge.
+                writer.close()
+                del writer
+                gc.collect()
             part_mb = os.path.getsize(part_path) / 1_048_576
             if part_mb <= config.TG_MAX_MB or end - start <= 1:
                 break
@@ -218,4 +225,8 @@ def split_for_telegram(pdf_path: str) -> list[str]:
         per_chunk = end - start
         start = end
         n += 1
+    try:
+        reader.close()
+    except Exception:
+        pass
     return parts

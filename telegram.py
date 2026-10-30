@@ -8,7 +8,12 @@ import httpx
 
 import config
 
-_API = f"https://api.telegram.org/bot{config.TG_TOKEN}"
+def _api() -> str:
+    """Resolve the API root at call time so the token is read from config."""
+    return f"https://api.telegram.org/bot{config.TG_TOKEN}"
+
+
+_API = _api()   # kept for backwards compatibility with external imports
 
 
 async def send_message(text: str, chat_id: str | None = None,
@@ -21,11 +26,17 @@ async def send_message(text: str, chat_id: str | None = None,
     if buttons:
         data["reply_markup"] = _kb(buttons)
     async with httpx.AsyncClient(timeout=30) as c:
-        for _ in range(3):
+        for attempt in range(3):
             try:
-                r = await c.post(f"{_API}/sendMessage", json=data)
+                r = await c.post(f"{_api()}/sendMessage", json=data)
                 if r.status_code == 200:
                     return r.json().get("result")
+                if r.status_code == 400 and "parse_mode" in data:
+                    # Malformed HTML in a caption must not swallow the message.
+                    data = {k: v for k, v in data.items() if k != "parse_mode"}
+                    continue
+                if 400 <= r.status_code < 500:
+                    return None
             except Exception:
                 pass
             await asyncio.sleep(2)
@@ -48,7 +59,11 @@ async def edit_message(chat_id, message_id, text: str,
         data["reply_markup"] = _kb(buttons)
     async with httpx.AsyncClient(timeout=30) as c:
         try:
-            r = await c.post(f"{_API}/editMessageText", json=data)
+            r = await c.post(f"{_api()}/editMessageText", json=data)
+            if r.status_code == 400 and "parse_mode" in data:
+                # Same message text without HTML, e.g. an unescaped '<'.
+                data.pop("parse_mode", None)
+                r = await c.post(f"{_api()}/editMessageText", json=data)
             return r.status_code == 200
         except Exception:
             return False
@@ -57,7 +72,7 @@ async def edit_message(chat_id, message_id, text: str,
 async def answer_callback(callback_id: str, text: str = "") -> bool:
     async with httpx.AsyncClient(timeout=15) as c:
         try:
-            r = await c.post(f"{_API}/answerCallbackQuery",
+            r = await c.post(f"{_api()}/answerCallbackQuery",
                              json={"callback_query_id": callback_id, "text": text})
             return r.status_code == 200
         except Exception:
@@ -77,7 +92,7 @@ async def send_document(path: str, caption: str = "",
             try:
                 with open(path, "rb") as f:
                     r = await c.post(
-                        f"{_API}/sendDocument",
+                        f"{_api()}/sendDocument",
                         data={"chat_id": chat, "caption": caption,
                               "parse_mode": "HTML"},
                         files={"document": (os.path.basename(path), f)},
@@ -91,7 +106,10 @@ async def send_document(path: str, caption: str = "",
                         retry_after = 5
                     await asyncio.sleep(min(retry_after, 120))
                     continue
-                if r.status_code in (400, 403, 413):
+                # Any other 4xx means the request itself is wrong (unknown chat,
+                # bad HTML caption, file too large...). Retrying eight times just
+                # stalls the export for minutes, so fail fast.
+                if 400 <= r.status_code < 500:
                     return False
             except Exception:
                 pass
@@ -105,12 +123,12 @@ async def send_photo(url_or_path: str, caption: str = "",
     async with httpx.AsyncClient(timeout=60) as c:
         try:
             if url_or_path.startswith("http"):
-                r = await c.post(f"{_API}/sendPhoto",
+                r = await c.post(f"{_api()}/sendPhoto",
                                  data={"chat_id": chat, "photo": url_or_path,
                                        "caption": caption, "parse_mode": "HTML"})
             else:
                 with open(url_or_path, "rb") as f:
-                    r = await c.post(f"{_API}/sendPhoto",
+                    r = await c.post(f"{_api()}/sendPhoto",
                                      data={"chat_id": chat, "caption": caption,
                                            "parse_mode": "HTML"},
                                      files={"photo": f})
@@ -120,9 +138,13 @@ async def send_photo(url_or_path: str, caption: str = "",
 
 
 async def set_webhook() -> bool:
-    if not config.PUBLIC_URL:
+    if not config.PUBLIC_URL or not config.TG_TOKEN:
+        return False
+    if len(config.TG_WEBHOOK_SECRET) < 8:
+        # The webhook route rejects short secrets, so registering one would
+        # leave the bot silently dead.
         return False
     url = f"{config.PUBLIC_URL}/tg/{config.TG_WEBHOOK_SECRET}"
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post(f"{_API}/setWebhook", data={"url": url})
+        r = await c.post(f"{_api()}/setWebhook", data={"url": url})
         return r.status_code == 200

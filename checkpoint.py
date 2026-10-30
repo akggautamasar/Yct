@@ -6,8 +6,11 @@ read/write access to the checkpoint repository. Never commit this token.
 import asyncio
 import base64
 import json
+import logging
 import os
 import httpx
+
+log = logging.getLogger(__name__)
 
 REPO = os.environ.get("CHECKPOINT_GITHUB_REPO", "akggautamasar/Yct")
 PATH = os.environ.get("CHECKPOINT_GITHUB_PATH", "data/telegram-uploads.json")
@@ -29,13 +32,24 @@ def _headers():
 
 
 async def _read(client):
-    response = await client.get(_url(), headers=_headers(), params={"ref": "main"})
+    # No "ref": read the same branch the PUT writes to (the repository default),
+    # so a repo whose default branch is not "main" still works.
+    response = await client.get(_url(), headers=_headers())
     if response.status_code == 404:
         return {"version": 1, "uploads": {}}, None
     response.raise_for_status()
     payload = response.json()
-    decoded = base64.b64decode(payload["content"]).decode("utf-8")
-    ledger = json.loads(decoded)
+    if payload.get("content"):
+        decoded = base64.b64decode(payload["content"]).decode("utf-8")
+    else:
+        # GitHub omits "content" for files above 1 MB; fetch the blob instead.
+        blob = await client.get(payload["download_url"], timeout=45)
+        blob.raise_for_status()
+        decoded = blob.text
+    try:
+        ledger = json.loads(decoded)
+    except ValueError as exc:
+        raise ValueError("Invalid checkpoint JSON") from exc
     if not isinstance(ledger.get("uploads"), dict):
         raise ValueError("Invalid checkpoint JSON")
     return ledger, payload["sha"]
@@ -46,12 +60,21 @@ def part_key(chat_id, book_id, start, end, part_number=1):
 
 
 async def has_part(key):
+    """True when the part was already uploaded.
+
+    A transient GitHub failure must not abort a multi-hour export, so an
+    unreadable ledger is treated as "unknown" and the part is simply rebuilt.
+    """
     if not TOKEN:
         return False
     async with _LOCK:
-        async with httpx.AsyncClient(timeout=30) as client:
-            ledger, _ = await _read(client)
-            return key in ledger["uploads"]
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                ledger, _ = await _read(client)
+                return key in ledger["uploads"]
+        except Exception:
+            log.warning("Could not read Telegram upload checkpoint; continuing", exc_info=True)
+            return False
 
 
 async def mark_part(key, details):

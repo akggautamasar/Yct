@@ -172,7 +172,12 @@ def cancel_job(jid: str) -> bool:
 
 
 async def _process(jid: str):
-    job = JOBS[jid]
+    job = JOBS.get(jid)
+    if job is None:
+        # Cancelled while it was still sitting in the queue. The worker must
+        # not die here: a bare JOBS[jid] raised KeyError, killed _worker and
+        # every later download stayed "queued" forever until a restart.
+        return
     job["_started"] = True
     chat = job.get("notify_chat")
     book_id = job["book_id"]
@@ -306,7 +311,12 @@ async def _process(jid: str):
                 # ── Browser download gate ──
                 if browser_download:
                     dl_path = os.path.join(DOWNLOAD_DIR, f"{jid}_{bi}_{display_name}")
-                    shutil.copy2(pdf_path, dl_path)
+                    try:
+                        shutil.copy2(pdf_path, dl_path)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"Could not stage PDF part for download: {exc.strerror or exc}"
+                        )
 
                     # Expose to UI
                     gate = asyncio.Event()
@@ -386,9 +396,22 @@ def start_category_archive(category_name: str, books: list[dict], resume_book: i
         "created_at": int(time.time()), "cancelled": False,
         "resume_book": resume_book, "resume_page": resume_page, "paused": False,
     }
+    _prune_category_jobs()
     BATCH_JOBS[batch_id] = job
     asyncio.create_task(_process_category_archive(batch_id, [dict(b) for b in books]))
     return batch_id
+
+
+_BATCH_KEEP = 40
+
+
+def _prune_category_jobs():
+    """Keep only the most recent finished exports so BATCH_JOBS cannot grow
+    without bound on a long-lived instance."""
+    finished = [bid for bid, job in BATCH_JOBS.items()
+                if job.get("status") in ("done", "error", "cancelled", "partial")]
+    for bid in finished[:-_BATCH_KEEP] if len(finished) > _BATCH_KEEP else []:
+        BATCH_JOBS.pop(bid, None)
 
 
 def get_category_archive(batch_id: str) -> dict | None:
@@ -454,7 +477,7 @@ async def _send_bot_chunk(job, chat, book_id, title, index, total_books, start, 
             key = checkpoint.part_key(chat, book_id, start, end, part_number)
             if await checkpoint.has_part(key):
                 continue
-            caption = f"<b>{html.escape(title)}</b>\\nBook {index}/{total_books} · pages {start}-{end}"
+            caption = f"<b>{html.escape(title)}</b>\nBook {index}/{total_books} · pages {start}-{end}"
             if len(pdf_parts) > 1:
                 caption += f" · file {part_number}/{len(pdf_parts)}"
             job["status"] = f"bot uploading {index}/{total_books} · pages {start}-{end}"
@@ -472,9 +495,21 @@ async def _send_bot_chunk(job, chat, book_id, title, index, total_books, start, 
                 os.remove(part)
 
 
+async def _cancel_task(task):
+    """Cancel a look-ahead download and wait for it, ignoring errors."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 async def _run_category_telegram_export(batch_id: str, books: list[dict]):
     job = BATCH_JOBS[batch_id]
     chat = config.TG_CHAT_ID
+    prefetch = None   # declared here so every exit path can cancel it
     try:
         job["status"] = "logging_in"
         if not config.TG_TOKEN or not chat:
@@ -524,12 +559,13 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                 _category_skip(job, f"{title}: page count unavailable")
                 job["done_books"] = index
                 continue
-            job["total_pages"] += int(total_pages)
-
             if not await scraper.has_access(book_id):
                 _category_skip(job, f"{title}: no access")
                 job["done_books"] = index
                 continue
+            # Count the pages only once the book is actually going to be processed,
+            # otherwise skipped books inflate the progress denominator.
+            job["total_pages"] += int(total_pages)
 
             chunk = max(1, min(config.CHUNK_PAGES, 40))
             book_had_upload_failure = False
@@ -540,6 +576,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             staged_bytes = 0
             # One-batch lookahead: download the next part while the current
             # part is being built/uploaded. Only two page batches occupy disk.
+            await _cancel_task(prefetch)
             prefetch = None
             async def fetch_batch(first, last, target_folder):
                 os.makedirs(target_folder, exist_ok=True)
@@ -584,6 +621,11 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
                             job["skipped_details"].append(f"{title}: pages {start}-{end} could not be downloaded")
+                        # Finish/stop the look-ahead batch we already started so
+                        # it is never garbage-collected mid-flight (which used
+                        # to leak its page folder).
+                        await _cancel_task(prefetch)
+                        prefetch = None
                         continue
 
                     job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
@@ -592,6 +634,8 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
                             job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
+                        await _cancel_task(prefetch)
+                        prefetch = None
                         continue
 
                     await asyncio.to_thread(validate_pdf_pages, pdf_path, len(page_numbers))
@@ -626,6 +670,9 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         if not sent:
                             job["failed_parts"] += 1
                             book_had_upload_failure = True
+                            if len(job["skipped_details"]) < 30:
+                                job["skipped_details"].append(
+                                    f"{title}: upload failed for pages {start}-{end}")
                             raise RuntimeError(
                                 f"Telegram upload failed for {title}, pages {start}-{end}. "
                                 "Check bot permissions, chat ID, and Telegram file-size limits."
@@ -663,6 +710,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
 
             if prefetch is not None:
                 await prefetch
+                prefetch = None
             if staged:
                 merged_path = os.path.join(config.WORK_DIR, f"{title}.pdf")
                 try:
@@ -687,7 +735,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             gc.collect()
                         validate_pdf_pages(merged_path, int(total_pages))
                         job["status"] = f"user uploading complete book {index}/{len(books)}"
-                        caption = f"<b>{html.escape(title)}</b>\\nComplete book · {total_pages} pages"
+                        caption = f"<b>{html.escape(title)}</b>\nComplete book · {total_pages} pages"
                         if await user_uploader.upload(merged_path, chat, caption):
                             if checkpoint.enabled():
                                 await checkpoint.mark_part(full_key, {
@@ -700,6 +748,9 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             for saved_start, saved_end, saved_path in staged:
                                 await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
                 except Exception as merge_error:
+                    logging.getLogger(__name__).warning(
+                        "Complete-book upload failed for %s (%s); falling back to page parts",
+                        title, type(merge_error).__name__)
                     job["status"] = f"complete PDF unavailable; bot fallback {index}/{len(books)}"
                     for saved_start, saved_end, saved_path in staged:
                         await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
@@ -740,6 +791,8 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             )
         except Exception:
             pass
+    finally:
+        await _cancel_task(prefetch)
 
 
 async def _worker():
@@ -749,6 +802,16 @@ async def _worker():
             if jid in JOBS:
                 async with _resource_lock:
                     await _process(jid)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:          # never let one job kill the queue
+            logging.getLogger(__name__).exception("Job %s crashed the worker", jid)
+            job = JOBS.get(jid)
+            if job is not None:
+                job["status"] = "error"
+                job["error"] = f"{type(exc).__name__}: {exc}"[:400]
+                job["current_part"] = None
+            _cleanup_job_files(job or {})
         finally:
             _q().task_done()
 

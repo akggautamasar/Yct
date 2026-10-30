@@ -22,6 +22,7 @@ import os
 import hmac
 import hashlib
 import asyncio
+from urllib.parse import quote
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
@@ -32,6 +33,29 @@ import jobs
 import telegram as tg
 
 app = FastAPI(title="YCT Downloader")
+
+
+def _disposition(kind: str, filename: str) -> str:
+    """Build a Content-Disposition value that survives non-ASCII titles.
+
+    Book titles are often Hindi. Response headers are encoded as latin-1, so
+    putting raw unicode in the header raises UnicodeEncodeError and the
+    download/reader endpoint answers HTTP 500. Use an ASCII fallback plus the
+    RFC 5987 ``filename*`` form so modern browsers keep the real name.
+    """
+    name = (filename or "download.pdf").replace('"', "'").replace("\\", " ")
+    ascii_name = name.encode("ascii", "ignore").decode("ascii").strip() or "download.pdf"
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=utf-8''{quote(name, safe='')}"
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception):
+    """Never hand the browser a bare 500 page; always explain what broke."""
+    import logging
+    logging.getLogger(__name__).exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        {"detail": f"Internal error: {type(exc).__name__}"}, status_code=500
+    )
 
 # Distributed queue API. Uses the same password gate as the rest of the site.
 class DistributedExportRequest(BaseModel):
@@ -298,12 +322,18 @@ def _api_cache_set(key, value, ttl):
             _API_CACHE.pop(next(iter(_API_CACHE)))
 
 
-async def _cached_api_value(key, ttl, producer):
-    cached = _api_cache_get(key)
+async def _cached_api_value(key, ttl, producer, bypass: bool = False):
+    """Return a cached value, or produce one.
+
+    ``bypass`` is used by the UI's Refresh control: ttl == 0 previously only
+    meant "don't store the new value", so a cached entry was still returned and
+    Refresh appeared to do nothing.
+    """
+    cached = None if bypass else _api_cache_get(key)
     if cached is not None:
         return cached
     async with _API_CACHE_LOCK:
-        cached = _api_cache_get(key)
+        cached = None if bypass else _api_cache_get(key)
         if cached is not None:
             return cached
         task = _API_INFLIGHT.get(key)
@@ -336,7 +366,8 @@ async def api_categories(refresh: bool = False):
         await _ensure_upstream_login()
         categories = await scraper.get_categories()
         return [{"id": key, "name": name} for key, name in sorted(categories.items())]
-    value = await _cached_api_value(("categories",), 0 if refresh else _CACHE_TTL["categories"], produce)
+    value = await _cached_api_value(("categories",), 0 if refresh else _CACHE_TTL["categories"],
+                                    produce, bypass=refresh)
     return [dict(row) for row in value]
 
 
@@ -367,14 +398,15 @@ async def api_books(cat: int | None = None, refresh: bool = False, all: bool = F
                 )
                 raise HTTPException(502, "YCT returned book links but no readable book IDs; source layout or access may have changed")
             return resolved
-        value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"], produce)
+        value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"],
+                                        produce, bypass=refresh)
         return [dict(row) for row in value]
 
     await _ensure_upstream_login()
     if all or cat is None:
         categories = await _cached_api_value(
             ("category_map",), 0 if refresh else _CACHE_TTL["categories"],
-            lambda: scraper.get_categories()
+            lambda: scraper.get_categories(), bypass=refresh
         )
         merged = []
         seen = set()
@@ -394,7 +426,8 @@ async def api_pages(book_id: int, refresh: bool = False):
         total = await scraper.get_total_pages(book_id)
         return {"book_id": book_id, "total_pages": total}
     cache_key = ("pages", int(book_id))
-    value = await _cached_api_value(cache_key, 0 if refresh else _CACHE_TTL["pages"], produce)
+    value = await _cached_api_value(cache_key, 0 if refresh else _CACHE_TTL["pages"],
+                                    produce, bypass=refresh)
     # A missing total is a transient failure, not a valid count. Do not cache
     # it for 30 minutes or keep the reader disabled after upstream recovery.
     if value.get("total_pages") is None:
@@ -560,7 +593,7 @@ async def api_job_read(jid: str):
     return FileResponse(
         path,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={"Content-Disposition": _disposition("inline", filename)},
     )
 
 
@@ -650,8 +683,25 @@ class DownloadReq(BaseModel):
 
 @app.post("/api/download")
 async def api_download(req: DownloadReq):
+    if req.book_id < 1:
+        raise HTTPException(400, "book_id must be positive")
+    if req.start < 1:
+        raise HTTPException(400, "start page must be 1 or greater")
+    if req.start > 10000:
+        raise HTTPException(400, "start page is out of range")
+    if req.end is not None:
+        if req.end < req.start:
+            raise HTTPException(400, f"end page ({req.end}) cannot be before start page ({req.start})")
+        if req.total_pages and req.end > req.total_pages:
+            raise HTTPException(400, f"end page ({req.end}) is past the last page ({req.total_pages})")
+        if req.end - req.start > 9999:
+            raise HTTPException(400, "page range is too large")
+    if not req.telegram and not req.browser_download:
+        raise HTTPException(400, "Choose a destination: Telegram, this device, or both")
+    if req.telegram and not config.TG_TOKEN:
+        raise HTTPException(503, "Telegram is not configured on the server (TG_TOKEN is missing)")
     jid = jobs.new_job(
-        book_id=req.book_id, title=req.title, cover=req.cover,
+        book_id=req.book_id, title=req.title[:180], cover=req.cover,
         start=req.start, end=req.end, do_ocr=req.do_ocr,
         total_pages=req.total_pages,
         notify_chat=(req.notify_chat or config.TG_CHAT_ID) if req.telegram else None,
@@ -713,8 +763,7 @@ async def api_job_download(jid: str):
     return FileResponse(
         path,
         media_type="application/pdf",
-        filename=filename,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _disposition("attachment", filename)},
         background=BackgroundTask(_reset_downloading),
     )
 
@@ -771,8 +820,19 @@ async def _ensure_cats():
     return _CATS_CACHE
 
 
+def _esc_html(text) -> str:
+    """Titles from YCT often contain & or <, which makes Telegram reject the
+    whole message with HTTP 400 and the bot appears dead."""
+    from html import escape
+    return escape(str(text or ""))
+
+
 async def _show_categories(chat_id, page=0, edit=None):
-    cats = await _ensure_cats()
+    try:
+        cats = await _ensure_cats()
+    except Exception as exc:
+        await _bot_reply(chat_id, "Could not load categories: " + _esc_html(str(exc)[:200]))
+        return
     if not cats:
         await _bot_reply(chat_id, "Login failed — check credentials.")
         return
@@ -780,7 +840,7 @@ async def _show_categories(chat_id, page=0, edit=None):
     total_pages = (len(items) + CATS_PER_PAGE - 1) // CATS_PER_PAGE
     page = max(0, min(page, total_pages - 1))
     chunk = items[page * CATS_PER_PAGE:(page + 1) * CATS_PER_PAGE]
-    btns = [(f"{name[:28]}", f"cat:{cid}:0") for cid, name in chunk]
+    btns = [(_esc_html(name)[:28], f"cat:{cid}:0") for cid, name in chunk]
     rows = _chunk_buttons(btns, per_row=1)
     nav = []
     if page > 0:
@@ -789,7 +849,7 @@ async def _show_categories(chat_id, page=0, edit=None):
         nav.append(("Next »", f"catpage:{page+1}"))
     if nav:
         rows.append(nav)
-    text = f"<b>Categories</b> (page {page+1}/{total_pages})\nPick one:"
+    text = f"<b>Categories</b> (page {page+1}/{total_pages})\nChoose one:"
     if edit:
         await tg.edit_message(chat_id, edit, text, rows)
     else:
@@ -797,17 +857,22 @@ async def _show_categories(chat_id, page=0, edit=None):
 
 
 async def _show_books(chat_id, cat_id, page=0, edit=None):
-    global _BOOKS_CACHE
     if cat_id not in _BOOKS_CACHE:
-        await _ensure_cats()
-        raw = await scraper.get_books_in_category(cat_id)
-        resolved = []
-        for b in raw[:60]:
-            name, bid = await scraper.get_book_details(b["detail_id"])
-            if bid:
-                resolved.append({"detail_id": b["detail_id"], "book_id": bid,
-                                 "name": name, "cover": b.get("cover", "")})
-        _BOOKS_CACHE[cat_id] = resolved
+        try:
+            await _ensure_cats()
+            raw = await scraper.get_books_in_category(cat_id)
+            resolved = []
+            for b in raw[:60]:
+                name, bid = await scraper.get_book_details(b["detail_id"])
+                if bid:
+                    resolved.append({"detail_id": b["detail_id"], "book_id": bid,
+                                     "name": name, "cover": b.get("cover", "")})
+            _BOOKS_CACHE[cat_id] = resolved
+        except Exception as exc:
+            message = "Could not load books: " + _esc_html(str(exc)[:200])
+            if edit: await tg.edit_message(chat_id, edit, message)
+            else: await _bot_reply(chat_id, message)
+            return
     books = _BOOKS_CACHE[cat_id]
     if not books:
         text = "No books found in this category."
@@ -820,7 +885,7 @@ async def _show_books(chat_id, cat_id, page=0, edit=None):
     btns = []
     for b in chunk:
         idx = books.index(b)
-        btns.append((b["name"][:32], f"book:{cat_id}:{idx}"))
+        btns.append((_esc_html(b["name"])[:32], f"book:{cat_id}:{idx}"))
     rows = _chunk_buttons(btns, per_row=1)
     nav = []
     if page > 0:
@@ -830,7 +895,7 @@ async def _show_books(chat_id, cat_id, page=0, edit=None):
         nav.append(("Next »", f"bookpage:{cat_id}:{page+1}"))
     rows.append(nav)
     cat_name = _CATS_CACHE.get(cat_id, f"Category {cat_id}")
-    text = f"<b>{cat_name}</b> (page {page+1}/{total_pages})\nPick a book:"
+    text = f"<b>{_esc_html(cat_name)}</b> (page {page+1}/{total_pages})\nChoose a book:"
     if edit:
         await tg.edit_message(chat_id, edit, text, rows)
     else:
@@ -843,19 +908,22 @@ async def _show_book_detail(chat_id, cat_id, idx, edit=None):
         await _bot_reply(chat_id, "Book not found — /start again."); return
     b = books[idx]
     if edit:
-        await tg.edit_message(chat_id, edit, f"Checking pages for <b>{b['name']}</b>…")
-    total = await scraper.get_total_pages(b["book_id"])
+        await tg.edit_message(chat_id, edit, f"Checking pages for <b>{_esc_html(b['name'])}</b>…")
+    try:
+        total = await scraper.get_total_pages(b["book_id"])
+    except Exception:
+        total = None
     total_txt = str(total) if total else "unknown"
     _CHAT_STATE[str(chat_id)] = {
         "book_id": b["book_id"], "detail_id": b["detail_id"],
         "title": b["name"], "total": total, "cat_id": cat_id, "idx": idx,
     }
     rows = [
-        [("⬇ Whole book", f"dl:whole"), ("First 10", f"dl:10")],
-        [("First 50", f"dl:50"), ("Custom range", f"dl:custom")],
+        [("⬇ Whole book", "dl:whole"), ("First 10", "dl:10")],
+        [("First 50", "dl:50"), ("Custom range", "dl:custom")],
         [("« Back", f"cat:{cat_id}:0"), ("⌂ Categories", "home")],
     ]
-    text = (f"<b>{b['name']}</b>\n"
+    text = (f"<b>{_esc_html(b['name'])}</b>\n"
             f"Book ID: <code>{b['book_id']}</code>\n"
             f"Total pages: <b>{total_txt}</b>\n\n"
             f"Choose what to download:")
@@ -869,14 +937,14 @@ async def _queue_from_state(chat_id, start, end):
     st = _CHAT_STATE.get(str(chat_id))
     if not st:
         await _bot_reply(chat_id, "Session expired — /start again."); return
-    jid = jobs.new_job(
+    jobs.new_job(
         book_id=st["book_id"], title=st["title"], cover="",
         start=start, end=end, do_ocr=False, total_pages=st.get("total"),
         notify_chat=str(chat_id), detail_id=st.get("detail_id"),
     )
-    rng = f"pages {start}-{end}" if end else "whole book"
+    rng = f"pages {start}-{end}" if end else "the whole book"
     await _bot_reply(chat_id,
-        f"✅ Queued <b>{st['title']}</b> ({rng}).\n"
+        f"✅ Queued <b>{_esc_html(st['title'])}</b> ({rng}).\n"
         f"I'll send the PDF here when it's ready.")
 
 
@@ -918,6 +986,7 @@ async def handle_callback(cb: dict):
                 "Send the page range as <code>start end</code> "
                 "(e.g. <code>5 40</code>), or a single number for first-N.")
         return
+    return
 
 
 async def handle_update(update: dict):
@@ -940,9 +1009,13 @@ async def handle_update(update: dict):
         if not nums:
             await _bot_reply(chat_id, "Couldn't read numbers. /start to retry."); return
         if len(nums) == 1:
-            await _queue_from_state(chat_id, 1, nums[0])
+            first, last = 1, nums[0]
         else:
-            await _queue_from_state(chat_id, nums[0], nums[1])
+            first, last = nums[0], nums[1]
+        if first < 1 or last < first:
+            await _bot_reply(chat_id, "Invalid range — the last page must be at or after the first.")
+            return
+        await _queue_from_state(chat_id, first, last)
         return
 
     parts = text.split()
@@ -967,20 +1040,42 @@ async def handle_update(update: dict):
         if len(parts) < 2 or not parts[1].isdigit():
             await _bot_reply(chat_id, "Usage: /get &lt;book_id&gt; [start] [end]"); return
         book_id = int(parts[1])
+        if book_id < 1:
+            await _bot_reply(chat_id, "Usage: /get &lt;book_id&gt; [start] [end]"); return
         start = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
         end = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
-        jid = jobs.new_job(book_id, f"Book {book_id}", "", start, end,
-                           False, None, notify_chat=str(chat_id))
+        if start < 1 or (end is not None and end < start):
+            await _bot_reply(chat_id, "Invalid page range — check start and end."); return
+        jobs.new_job(book_id, f"Book {book_id}", "", start, end,
+                     False, None, notify_chat=str(chat_id))
         await _bot_reply(chat_id, f"✅ Queued book {book_id}.")
         return
 
     await _bot_reply(chat_id, "Send /start to browse with buttons.")
 
 
+def _log_update_failure(task: asyncio.Task):
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        import logging
+        logging.getLogger(__name__).error("Telegram update failed: %s", exc, exc_info=exc)
+
+
 @app.post("/tg/{secret}")
 async def tg_webhook(secret: str, request: Request):
-    if secret != config.TG_WEBHOOK_SECRET:
+    expected = config.TG_WEBHOOK_SECRET
+    # The secret ships as a public URL path segment, so it must at least be a
+    # real secret and must be compared in constant time.
+    if len(expected) < 8 or not hmac.compare_digest(secret, expected):
         raise HTTPException(403, "forbidden")
-    update = await request.json()
-    asyncio.create_task(handle_update(update))
+    try:
+        update = await request.json()
+    except ValueError:
+        raise HTTPException(400, "invalid update payload")
+    if not isinstance(update, dict):
+        raise HTTPException(400, "invalid update payload")
+    task = asyncio.create_task(handle_update(update))
+    task.add_done_callback(_log_update_failure)
     return JSONResponse({"ok": True})

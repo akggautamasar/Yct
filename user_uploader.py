@@ -1,6 +1,5 @@
 """Optional Telegram user uploader. Secrets are read from Render environment."""
 import os
-import asyncio
 import logging
 
 log = logging.getLogger(__name__)
@@ -19,7 +18,6 @@ async def upload(path, chat_id, caption):
         return False
     from telethon import TelegramClient
     from telethon.sessions import StringSession
-    from telethon.errors import RPCError
     client = TelegramClient(
         StringSession(os.environ["TG_STRING_SESSION"]),
         int(os.environ["TG_API_ID"]),
@@ -44,8 +42,11 @@ async def upload(path, chat_id, caption):
         await client.send_file(entity, path, caption=caption, parse_mode="html",
                                force_document=True)
         return True
-    except (Exception,):
+    except Exception:
         log.exception("Telegram user upload unavailable; using bot fallback")
         return False
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass

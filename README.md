@@ -5,7 +5,7 @@ FastAPI web app + Telegram bot for browsing the YCT publication catalogue, readi
 ## Performance-focused behavior
 
 - **Instant repeat catalogue visits:** browser-local catalogue cache lasts up to 24 hours on the same device.
-- **Server cache:** categories cache for 15 minutes; category book lists and page counts for 30 minutes. Use the web UI's refresh control to bypass cache for fresh data.
+- **Server cache:** categories cache for 15 minutes; category book lists and page counts for 30 minutes. The web UI's Reload/Refresh control sends `?refresh=true`, which bypasses both the browser copy and the server cache. Page counts that the source does not report are never cached, so a failed detection is retried on the next request.
 - **Local search:** search within the loaded category without another server request.
 - **On-demand reader:** loads individual book pages, not the whole book, and uses a strict 8-page / 8 MiB in-memory page cache with a 15-minute TTL.
 - **Light polling:** active jobs refresh quickly; idle job lists are polled less frequently.
@@ -61,7 +61,10 @@ Do not place the token in source control.
    - `YCT_EMAIL`, `YCT_PASSWORD`
    - `TG_TOKEN`, `TG_CHAT_ID` (optional for browser-only mode)
    - `PUBLIC_URL` (optional, for webhook registration)
-   - `TG_WEBHOOK_SECRET` (generate a secret value)
+   - `TG_WEBHOOK_SECRET` (required for the bot; must be at least 8 characters.
+     It is part of the public webhook URL, and the webhook rejects every update
+     when it is missing or shorter than 8 characters, so the bot stays offline
+     instead of accepting guessed paths.)
    - `SITE_PASSWORD` (optional site password)
 3. Deploy, then check `/healthz` and `/api/categories`.
 

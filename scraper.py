@@ -14,8 +14,14 @@ import config
 
 _client: httpx.AsyncClient | None = None
 _login_lock = asyncio.Lock()
+_refresh_lock = asyncio.Lock()
 _session_cookie: str | None = None
 _login_complete = False
+_login_at: float = 0.0
+# Bumped after every successful handshake. Workers that hit a 401 capture the
+# generation they saw and ask for a refresh; concurrent callers then coalesce
+# into a single re-login instead of six parallel POSTs to YCT.
+_auth_generation = 0
 _last_login_result: dict = {"state": "not_attempted"}
 
 
@@ -37,7 +43,7 @@ async def login(force: bool = False) -> bool:
     YCT may embed sign-in forms on pages after login. The session also
     may not use a cookie named ci_session, so neither proves failure.
     """
-    global _session_cookie, _login_complete, _last_login_result
+    global _session_cookie, _login_complete, _last_login_result, _login_at, _auth_generation
     async with _login_lock:
         if _login_complete and not force:
             return True
@@ -84,9 +90,33 @@ async def login(force: bool = False) -> bool:
 
         _session_cookie = c.cookies.get("ci_session")
         _login_complete = True
+        _login_at = asyncio.get_running_loop().time()
+        _auth_generation += 1
         _last_login_result = {"state": "handshake_accepted", "http_status": r.status_code,
                               "cookie_present": bool(_session_cookie)}
         return True
+
+
+async def refresh_login(seen_generation: int | None = None) -> bool:
+    """Force a new handshake, collapsing concurrent requests into one.
+
+    Page downloads hit 401/403 together when a session expires. Without this
+    each worker fired its own ``login(force=True)``, which is slow and looks
+    like abuse upstream.
+    """
+    async with _refresh_lock:
+        if seen_generation is not None and seen_generation != _auth_generation:
+            return _login_complete
+        return await login(force=True)
+
+
+async def ensure_login(max_age: float = 20 * 60) -> bool:
+    """Log in once, and re-handshake when the session has gone stale."""
+    if _login_complete:
+        age = asyncio.get_running_loop().time() - _login_at
+        if age < max_age:
+            return True
+    return await login()
 
 
 def _is_img(b: bytes) -> bool:
@@ -96,8 +126,13 @@ def _is_img(b: bytes) -> bool:
 
 
 async def get_categories() -> dict[int, str]:
+    from urllib.parse import urlparse
     c = await get_client()
     page = await c.get(f"{config.BASE_URL}/ebook")
+    if page.status_code != 200:
+        raise RuntimeError(f"YCT category page returned HTTP {page.status_code}")
+    if urlparse(str(page.url)).path.rstrip("/").lower().endswith("/login"):
+        raise RuntimeError("YCT redirected the category request to login; check the account session")
     soup = BeautifulSoup(page.text, "html.parser")
     cats: dict[int, str] = {}
     for a in soup.find_all("a", href=True):
@@ -106,6 +141,8 @@ async def get_categories() -> dict[int, str]:
         m = re.match(r".*/ebook/(\d+)$", href)
         if m and text:
             cats[int(m.group(1))] = text
+    if not cats:
+        raise RuntimeError("YCT returned no categories; the upstream layout may have changed")
     return cats
 
 
@@ -179,13 +216,14 @@ async def get_total_pages(book_id: int) -> int | None:
     try:
         rb = await c.get(f"{config.BASE_URL}/readbook/{book_id}/1",
                          headers={**config.HEADERS, "Referer": f"{config.BASE_URL}/ebook"})
-        for pat in [r"of\s+(\d+)", r"maxPage\s*=\s*(\d+)",
+        for pat in [r"(?:page|पृष्ठ)\s*\d+\s*(?:of|/)\s*(\d+)",
+                    r"maxPage\s*=\s*(\d+)",
                     r"max_page\s*[=:]\s*(\d+)", r"totalPages?\s*[=:]\s*(\d+)",
-                    r'"pages"\s*:\s*(\d+)', r"pageCount\s*[=:]\s*(\d+)"]:
-            m = re.search(pat, rb.text, re.IGNORECASE)
-            if m:
+                    r'"pages"\s*:\s*(\d+)', r'"total_pages"\s*:\s*(\d+)',
+                    r"pageCount\s*[=:]\s*(\d+)"]:
+            for m in re.finditer(pat, rb.text, re.IGNORECASE):
                 val = int(m.group(1))
-                if 10 < val < 10000:
+                if 0 < val < 10000:
                     return val
     except Exception:
         pass
@@ -444,11 +482,13 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     url = f"{config.BASE_URL}/getPage/{book_id}/{page}"
     ref = {"Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
 
+    generation = _auth_generation
     for attempt in range(1, config.PAGE_RETRY + 1):
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
-            if resp.status_code in (401, 403) and attempt == 1:
-                if await login(force=True):
+            if resp.status_code in (401, 403):
+                if await refresh_login(generation):
+                    generation = _auth_generation
                     continue
             if resp.status_code in (429, 503):
                 await asyncio.sleep(min(15 * attempt, 90))
@@ -460,16 +500,18 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
             if attempt == 1 and (
                 "/login" in str(resp.url).lower()
                 or ("<form" in body[:8000].lower() and "password" in body[:8000].lower())
-                or resp.status_code in (401, 403)
             ):
-                if await login(force=True):
+                if await refresh_login(generation):
+                    generation = _auth_generation
                     continue
             decoded = _decode_page(resp.content, body)
             if decoded:
                 data, ext = decoded
                 out = png if ext == "png" else jpg
-                with open(out, "wb") as f:
+                tmp = out + ".part"
+                with open(tmp, "wb") as f:
                     f.write(data)
+                os.replace(tmp, out)     # atomic: a retry never sees half a page
                 await asyncio.sleep(max(0, config.REQ_DELAY))
                 return page, "ok"
             await asyncio.sleep(min(2 ** attempt, 10))
