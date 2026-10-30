@@ -212,7 +212,12 @@ async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
                 return False, "YCT page endpoint returned 404; check book ID and reader endpoint"
             if response.status_code in (429, 500, 502, 503, 504):
                 return False, f"YCT page endpoint unavailable (HTTP {response.status_code})"
-            return False, f"YCT returned HTTP {response.status_code} without a recognized page image"
+            media_type = response.headers.get("content-type", "unknown").split(";")[0][:48]
+            if "<html" in payload[:300].lower() or "<!doctype html" in payload[:300].lower():
+                return False, f"YCT returned an HTML page instead of an image (HTTP {response.status_code}); check account permissions and reader URL"
+            if payload.startswith(("{", "[")):
+                return False, f"YCT returned JSON instead of an image (HTTP {response.status_code}, {media_type}); check reader response format"
+            return False, f"YCT returned HTTP {response.status_code}, content-type {media_type}, without a valid page image"
         except httpx.HTTPError as exc:
             return False, f"YCT page request failed ({type(exc).__name__})"
     return False, "YCT page access failed after session refresh"
