@@ -301,39 +301,45 @@ def _decode_page(content: bytes, text: str) -> tuple[bytes, str] | None:
 
 
 async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
-    """Fetch one page straight into memory — never touches disk. Used by the
-    in-browser preview reader so users can flip through a book before
-    committing to a full download (keeps Render's free-tier storage/RAM
-    untouched: only the single page currently being viewed is ever held)."""
-    c = await get_client()
+    """Fetch a preview without blocking the UI for minutes on rate limits."""
+    import logging
+    client = await get_client()
     url = f"{config.BASE_URL}/getPage/{book_id}/{page}"
-    ref = {"Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
-    for attempt in range(1, config.PAGE_RETRY + 1):
+    headers = {**config.HEADERS, "Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
+    log = logging.getLogger(__name__)
+    for attempt in range(2):
         try:
-            resp = await c.get(url, headers={**config.HEADERS, **ref})
-            if resp.status_code in (401, 403) and attempt == 1:
-                if await login(force=True):
+            response = await client.get(url, headers=headers, timeout=12.0)
+            body = "" if _is_img(response.content) else response.text.strip()
+            needs_login = response.status_code in (401, 403) or (
+                "/login" in str(response.url).lower()
+                or ("<form" in body[:6000].lower() and "password" in body[:6000].lower())
+            )
+            if needs_login:
+                if attempt == 0 and await login(force=True):
                     continue
-            if resp.status_code in (429, 503):
-                await asyncio.sleep(min(15 * attempt, 90))
-                continue
-            if resp.status_code != 200:
-                await asyncio.sleep(min(2 ** attempt, 20))
-                continue
-            body = resp.text.strip() if resp.content[:1] not in (b"\x89", b"\xff") else ""
-            if attempt == 1 and (
-                "/login" in str(resp.url).lower()
-                or ("<form" in body[:8000].lower() and "password" in body[:8000].lower())
-                or resp.status_code in (401, 403)
-            ):
-                if await login(force=True):
-                    continue
-            decoded = _decode_page(resp.content, body)
+                log.warning("YCT preview rejected: book=%s page=%s status=%s", book_id, page, response.status_code)
+                return None
+            if response.status_code in (429, 503):
+                log.warning("YCT preview rate-limited: book=%s page=%s status=%s", book_id, page, response.status_code)
+                return None
+            if response.status_code != 200:
+                log.warning("YCT preview HTTP error: book=%s page=%s status=%s", book_id, page, response.status_code)
+                return None
+            decoded = _decode_page(response.content, body)
             if decoded:
                 return decoded
-            await asyncio.sleep(min(2 ** attempt, 10))
-        except Exception:
-            await asyncio.sleep(min(2 ** attempt, 15))
+            log.warning("YCT preview invalid image: book=%s page=%s mime=%s bytes=%s",
+                        book_id, page, response.headers.get("content-type", "unknown").split(";")[0][:60],
+                        len(response.content))
+            return None
+        except httpx.HTTPError as exc:
+            log.warning("YCT preview network error: book=%s page=%s reason=%s",
+                        book_id, page, type(exc).__name__)
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+                continue
+            return None
     return None
 
 
