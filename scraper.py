@@ -311,6 +311,9 @@ async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
     for attempt in range(1, config.PAGE_RETRY + 1):
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
+            if resp.status_code in (401, 403) and attempt == 1:
+                if await login(force=True):
+                    continue
             if resp.status_code in (429, 503):
                 await asyncio.sleep(min(15 * attempt, 90))
                 continue
@@ -349,6 +352,9 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     for attempt in range(1, config.PAGE_RETRY + 1):
         try:
             resp = await c.get(url, headers={**config.HEADERS, **ref})
+            if resp.status_code in (401, 403) and attempt == 1:
+                if await login(force=True):
+                    continue
             if resp.status_code in (429, 503):
                 await asyncio.sleep(min(15 * attempt, 90))
                 continue
