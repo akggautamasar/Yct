@@ -393,7 +393,12 @@ async def api_pages(book_id: int, refresh: bool = False):
         await _ensure_upstream_login()
         total = await scraper.get_total_pages(book_id)
         return {"book_id": book_id, "total_pages": total}
-    value = await _cached_api_value(("pages", int(book_id)), 0 if refresh else _CACHE_TTL["pages"], produce)
+    cache_key = ("pages", int(book_id))
+    value = await _cached_api_value(cache_key, 0 if refresh else _CACHE_TTL["pages"], produce)
+    # A missing total is a transient failure, not a valid count. Do not cache
+    # it for 30 minutes or keep the reader disabled after upstream recovery.
+    if value.get("total_pages") is None:
+        _API_CACHE.pop(cache_key, None)
     return dict(value)
 
 
