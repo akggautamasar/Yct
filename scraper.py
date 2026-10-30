@@ -198,7 +198,7 @@ async def check_page_access(book_id: int, page: int = 1) -> tuple[bool, str]:
     for attempt in range(2):
         try:
             r = await c.get(url, headers=headers)
-            body = r.text.strip() if r.content[:1] not in (b"\\x89", b"\\xff") else ""
+            body = r.text.strip() if r.content[:1] not in (b"\x89", b"\xff") else ""
             if r.status_code == 200 and _decode_page(r.content, body):
                 return True, "ok"
             redirected = "/login" in str(r.url).lower()
