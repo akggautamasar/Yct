@@ -27,11 +27,11 @@ DO_OCR_DEFAULT = os.environ.get("DO_OCR", "false").lower() == "true"
 OCR_LANG    = os.environ.get("OCR_LANG", "hin+eng")
 # Process big books in page-batches so memory stays flat on the 512MB tier.
 # Each batch is downloaded, built into its own PDF, uploaded, then freed.
-CHUNK_PAGES = int(os.environ.get("CHUNK_PAGES", "40"))
+CHUNK_PAGES = max(1, min(500, int(os.environ.get("CHUNK_PAGES", "40"))))
 
 # --- Constants ---
 BASE_URL = "https://yctpublication.com"
-WORK_DIR = os.environ.get("WORK_DIR", "/tmp/yct")     # ephemeral scratch
+WORK_DIR = os.environ.get("WORK_DIR", "/tmp/yct")     # Set to persistent directory on Oracle
 HEADERS  = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
