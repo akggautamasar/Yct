@@ -187,18 +187,19 @@ def build(folder: str, pdf_path: str, do_ocr: bool) -> tuple[float, bool]:
     return build_lossless(folder, pdf_path), False
 
 
-def split_for_telegram(pdf_path: str) -> list[str]:
+def split_for_telegram(pdf_path: str, max_mb: float | None = None) -> list[str]:
     """Split a PDF into <= TG_MAX_MB chunks. Returns list of part paths
     (the original if already small enough)."""
+    limit = float(max_mb if max_mb is not None else config.TG_MAX_MB)
     mb = os.path.getsize(pdf_path) / 1_048_576
-    if mb <= config.TG_MAX_MB:
+    if mb <= limit:
         return [pdf_path]
 
     base = os.path.splitext(pdf_path)[0]
     reader = PdfReader(pdf_path)
     total = len(reader.pages)
     avg = mb / total
-    per_chunk = max(1, int((config.TG_MAX_MB * 0.9) / avg))
+    per_chunk = max(1, int((limit * 0.9) / avg))
 
     parts, n, start = [], 1, 0
     while start < total:
@@ -218,7 +219,7 @@ def split_for_telegram(pdf_path: str) -> list[str]:
                 del writer
                 gc.collect()
             part_mb = os.path.getsize(part_path) / 1_048_576
-            if part_mb <= config.TG_MAX_MB or end - start <= 1:
+            if part_mb <= limit or end - start <= 1:
                 break
             end = start + max(1, (end - start) * 9 // 10)
         parts.append(part_path)
