@@ -63,7 +63,7 @@ async def _remote_read(client):
 async def has_part(key):
     async with _LOCK:
         if DB:
-            conn = await asyncio.to_thread(_connect)
+            conn = _connect()
             try:
                 if conn.execute("SELECT 1 FROM uploads WHERE key=?", (key,)).fetchone():
                     return True
@@ -84,7 +84,7 @@ async def has_part(key):
 async def mark_part(key, details):
     async with _LOCK:
         if DB:
-            conn = await asyncio.to_thread(_connect)
+            conn = _connect()
             try:
                 conn.execute("INSERT OR IGNORE INTO uploads VALUES (?, ?, ?)",
                              (key, json.dumps(details, ensure_ascii=False), int(time.time())))
