@@ -223,7 +223,7 @@ async def _process(jid: str):
         if not accessible:
             raise RuntimeError(access_reason)
 
-        chunk = max(1, config.CHUNK_PAGES)
+        chunk = len(pages) if user_uploader.configured() else max(1, config.CHUNK_PAGES)
         batches = [pages[i:i + chunk] for i in range(0, len(pages), chunk)]
         multi = len(batches) > 1
         job["total_parts"] = len(batches)
@@ -295,18 +295,21 @@ async def _process(jid: str):
                 # ── Telegram upload ──
                 if chat:
                     job["status"] = f"uploading part {bi}/{len(batches)}" if multi else "uploading"
-                    tg_parts = pdfbuilder.split_for_telegram(pdf_path)
-                    for pj, part in enumerate(tg_parts, 1):
-                        cap = f"<b>{title}</b> | pages {b_start}-{b_end} | {quality}"
-                        if multi:
-                            cap += f" | part {bi}/{len(batches)}"
-                        if len(tg_parts) > 1:
-                            cap += f" [{pj}/{len(tg_parts)}]"
-                        if not await tg.send_document(part, cap, chat):
-                            raise RuntimeError(f"Telegram upload failed: {display_name}")
-                        if part != pdf_path:
-                            try: os.remove(part)
-                            except: pass
+                    user_mode = user_uploader.configured()
+                    tg_parts = await asyncio.to_thread(pdfbuilder.split_for_telegram, pdf_path, 1900 if user_mode else None)
+                    try:
+                        for pj, part in enumerate(tg_parts, 1):
+                            cap = f"<b>{html.escape(title)}</b> | pages {b_start}-{b_end} | {quality}"
+                            if len(tg_parts) > 1:
+                                cap += f" | file {pj}/{len(tg_parts)}"
+                            sent = (await user_uploader.upload(part, chat, cap) if user_mode
+                                    else await tg.send_document(part, cap, chat))
+                            if not sent:
+                                raise RuntimeError(f"Telegram upload failed: {display_name}")
+                    finally:
+                        for part in tg_parts:
+                            if part != pdf_path and os.path.exists(part):
+                                os.remove(part)
 
                 # ── Browser download gate ──
                 if browser_download:
@@ -567,10 +570,10 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
             # otherwise skipped books inflate the progress denominator.
             job["total_pages"] += int(total_pages)
 
-            chunk = max(1, min(config.CHUNK_PAGES, 40))
+            chunk = max(1, config.CHUNK_PAGES)
             book_had_upload_failure = False
             # Disk cap protects Render free instance; retain only bounded batches.
-            full_mode = user_uploader.configured() and not (index == job["resume_book"] and job["resume_page"] > 1)
+            full_mode = user_uploader.configured()
             max_book_bytes = max(40, int(os.getenv("TG_FULL_BOOK_MAX_MB", "250"))) * 1048576
             staged = []
             staged_bytes = 0
@@ -626,6 +629,8 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         # to leak its page folder).
                         await _cancel_task(prefetch)
                         prefetch = None
+                        if full_mode:
+                            raise RuntimeError(f"Missing pages in {title}: {failed[:25]}")
                         continue
 
                     job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
@@ -636,6 +641,8 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                             job["skipped_details"].append(f"{title}: PDF build failed for pages {start}-{end}")
                         await _cancel_task(prefetch)
                         prefetch = None
+                        if full_mode:
+                            raise RuntimeError(f"PDF build failed for {title}, pages {start}-{end}")
                         continue
 
                     await asyncio.to_thread(validate_pdf_pages, pdf_path, len(page_numbers))
@@ -644,7 +651,7 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         os.replace(pdf_path, staged_path)
                         staged.append((start, end, staged_path))
                         staged_bytes += os.path.getsize(staged_path)
-                        if staged_bytes > max_book_bytes:
+                        if not full_mode and staged_bytes > max_book_bytes:
                             full_mode = False
                             for saved_start, saved_end, saved_path in staged:
                                 await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
@@ -712,6 +719,10 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                 await prefetch
                 prefetch = None
             if staged:
+                if staged[0][0] != 1 or staged[-1][1] != int(total_pages) or any(
+                    staged[i][1] + 1 != staged[i+1][0] for i in range(len(staged)-1)
+                ):
+                    raise RuntimeError(f"Cannot upload incomplete book {title}: missing page ranges")
                 merged_path = os.path.join(config.WORK_DIR, f"{title}.pdf")
                 try:
                     await _wait_if_paused(job)
@@ -736,24 +747,29 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         validate_pdf_pages(merged_path, int(total_pages))
                         job["status"] = f"user uploading complete book {index}/{len(books)}"
                         caption = f"<b>{html.escape(title)}</b>\nComplete book · {total_pages} pages"
-                        if await user_uploader.upload(merged_path, chat, caption):
-                            if checkpoint.enabled():
-                                await checkpoint.mark_part(full_key, {
-                                    "book_id": book_id, "title": title, "start_page": 1,
-                                    "end_page": total_pages, "method": "telegram_user",
-                                    "uploaded_at": int(time.time()), "chat_id": str(chat)})
-                            job["uploaded_parts"] += 1
-                        else:
-                            job["status"] = f"user upload unavailable; bot fallback {index}/{len(books)}"
-                            for saved_start, saved_end, saved_path in staged:
-                                await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
-                except Exception as merge_error:
-                    logging.getLogger(__name__).warning(
-                        "Complete-book upload failed for %s (%s); falling back to page parts",
-                        title, type(merge_error).__name__)
-                    job["status"] = f"complete PDF unavailable; bot fallback {index}/{len(books)}"
-                    for saved_start, saved_end, saved_path in staged:
-                        await _send_bot_chunk(job, chat, book_id, title, index, len(books), saved_start, saved_end, saved_path)
+                        upload_parts = await asyncio.to_thread(pdfbuilder.split_for_telegram, merged_path, 1900)
+                        try:
+                            for part_number, upload_path in enumerate(upload_parts, 1):
+                                part_key = full_key if len(upload_parts) == 1 else f"{full_key}:file:{part_number}"
+                                if await checkpoint.has_part(part_key):
+                                    continue
+                                part_caption = caption
+                                if len(upload_parts) > 1:
+                                    part_caption += f" · file {part_number}/{len(upload_parts)}"
+                                job["status"] = f"user uploading {index}/{len(books)} · file {part_number}/{len(upload_parts)}"
+                                if not await user_uploader.upload(upload_path, chat, part_caption):
+                                    raise RuntimeError(f"Telegram user upload failed for {title}; no bot fallback")
+                                if checkpoint.enabled():
+                                    await checkpoint.mark_part(part_key, {
+                                        "book_id": book_id, "title": title, "start_page": 1,
+                                        "end_page": total_pages, "method": "telegram_user",
+                                        "file_number": part_number, "uploaded_at": int(time.time()),
+                                        "chat_id": str(chat)})
+                                job["uploaded_parts"] += 1
+                        finally:
+                            for part in upload_parts:
+                                if part != merged_path and os.path.exists(part):
+                                    os.remove(part)
                 finally:
                     for _, _, part in staged:
                         try:
