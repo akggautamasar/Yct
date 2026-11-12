@@ -2159,6 +2159,8 @@ $('#newOnly').addEventListener('change', () => {
 });
 let catalogPolling = null;
 let catalogWasRunning = false;
+let lastCatalogRevision = 0;
+try { lastCatalogRevision = Number(sessionStorage.getItem('airyct.catalog.revision') || 0); } catch {}
 async function pollLibrary() {
   let delay = 30000;
   try {
@@ -2179,7 +2181,8 @@ async function pollLibrary() {
     } else {
       $('#libSyncStatus').textContent = 'Tap Sync library to build the catalog';
     }
-    if (catalogWasRunning && !running) {
+    const revision = Number(data.revision || 0);
+    if (!running && ((catalogWasRunning && !running) || (revision && revision !== lastCatalogRevision))) {
       try {
         for (let i = localStorage.length - 1; i >= 0; i--) {
           const key = localStorage.key(i);
@@ -2188,6 +2191,10 @@ async function pollLibrary() {
       } catch {}
       await refreshCats(false);
       await loadBooks(true);
+    }
+    if (!running && revision) {
+      lastCatalogRevision = revision;
+      try { sessionStorage.setItem('airyct.catalog.revision', String(revision)); } catch {}
     }
     catalogWasRunning = running;
   } catch (error) {
