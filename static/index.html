@@ -889,6 +889,40 @@ header h1 { min-width:0; overflow-wrap:anywhere; }
   .book-item { padding:6px; }
   header .badge { font-size:9px; }
 }
+
+/* MOBILE SCROLL REPAIR: one natural scroll container for filters AND books.
+   The earlier nested flex scroller was squeezed to a few pixels by the tall
+   library summary. The grid must expand to its actual content height. */
+@media (max-width:768px) {
+  .app { height:100dvh; min-height:0; overflow:hidden; grid-template-rows:64px minmax(0,1fr); }
+  .body { min-height:0; height:100%; overflow:hidden; grid-template-rows:minmax(0,1fr); }
+  .sidebar {
+    display:block; min-height:0; height:100%; overflow-x:hidden; overflow-y:auto;
+    overscroll-behavior-y:contain; -webkit-overflow-scrolling:touch;
+    padding-bottom:calc(32px + env(safe-area-inset-bottom));
+  }
+  .book-list {
+    display:grid; flex:none; height:auto; min-height:0; max-height:none;
+    overflow:visible; content-visibility:visible; contain:none;
+    contain-intrinsic-size:auto; align-content:start;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    grid-auto-rows:auto; gap:12px; padding:8px 12px 24px;
+  }
+  .book-item {
+    display:flex; flex-direction:column; align-self:stretch;
+    height:auto; min-height:0; max-height:none; overflow:hidden;
+    contain:none; padding:9px; transform:none;
+  }
+  .book-cover-img, .book-icon-fallback {
+    display:block; flex:none; width:100%; height:auto; max-height:none;
+    aspect-ratio:3/4; object-fit:contain; object-position:center;
+    border-radius:8px; margin:0 0 9px;
+  }
+  .book-icon-fallback { display:flex; }
+  .book-item .info { display:flex; flex-direction:column; min-width:0; width:100%; }
+  .book-item .name { display:-webkit-box; -webkit-line-clamp:3; line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; width:100%; }
+  .book-item .sub { max-width:100%; }
+}
 </style>
 </head>
 <body>
