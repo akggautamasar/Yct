@@ -118,72 +118,72 @@ def _resolve_lang(requested: str, available: list[str]) -> str:
 
 
 def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
-    """Build searchable PDF. Returns (mb, ocr_succeeded).
-    Falls back to lossless build if OCR can't run."""
+    """Build a complete searchable PDF or fail explicitly, never omit pages."""
     import pytesseract
+
     imgs = _ordered_images(folder)
-    page_pdfs, tmp = [], []
-    errors = 0
-
-    for fn in imgs:
-        fp = os.path.join(folder, fn)
-        try:
-            with Image.open(fp) as img:
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf")
-            if not pdf_bytes:
-                errors += 1; continue
-            out = fp + ".ocr.pdf"
-            with open(out, "wb") as f:
-                f.write(pdf_bytes)
-            page_pdfs.append(out); tmp.append(out)
-        except Exception:
-            errors += 1
-
-    if not page_pdfs:
-        return build_lossless(folder, pdf_path), False
+    if not imgs:
+        raise RuntimeError("OCR requested but no page images were found")
 
     writer = PdfWriter()
-    count = 0
-    for p in page_pdfs:
+    try:
+        for index, filename in enumerate(imgs, 1):
+            fp = os.path.join(folder, filename)
+            try:
+                with Image.open(fp) as source:
+                    img = source.convert("RGB")
+                    pdf_bytes = pytesseract.image_to_pdf_or_hocr(
+                        img, lang=lang, extension="pdf"
+                    )
+                if not pdf_bytes:
+                    raise RuntimeError("Tesseract returned an empty PDF")
+                from io import BytesIO
+                page_reader = PdfReader(BytesIO(pdf_bytes))
+                if len(page_reader.pages) != 1:
+                    raise RuntimeError("Tesseract did not return exactly one page")
+                writer.add_page(page_reader.pages[0])
+            except Exception as exc:
+                raise RuntimeError(
+                    f"OCR failed on page {index}/{len(imgs)} ({filename}): {exc}"
+                ) from exc
+
+        tmp_path = pdf_path + ".ocr.part"
         try:
-            with open(p, "rb") as src:
-                reader = PdfReader(src)
-                for pg in reader.pages:
-                    writer.add_page(pg)
-            del reader
-            count += 1
-        except Exception:
-            pass
-
-    if count == 0:
-        for p in tmp:
-            try: os.remove(p)
-            except: pass
-        del writer
-        return build_lossless(folder, pdf_path), False
-
-    with open(pdf_path, "wb") as f:
-        writer.write(f)
-    for p in tmp:
-        try: os.remove(p)
-        except: pass
-    mb = os.path.getsize(pdf_path) / 1_048_576
-    del writer
-    gc.collect()
-    return mb, True
+            with open(tmp_path, "wb") as output:
+                writer.write(output)
+            with open(tmp_path, "rb") as source:
+                count = len(PdfReader(source).pages)
+            if count != len(imgs):
+                raise RuntimeError(
+                    f"OCR PDF page mismatch: expected {len(imgs)}, got {count}"
+                )
+            os.replace(tmp_path, pdf_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        return os.path.getsize(pdf_path) / 1_048_576, True
+    finally:
+        writer.close()
+        gc.collect()
 
 
 def build(folder: str, pdf_path: str, do_ocr: bool) -> tuple[float, bool]:
-    """Top-level build. Returns (mb, ocr_used)."""
+    """Build a PDF; never silently substitute an image-only PDF for OCR."""
     if do_ocr:
         ok, available = _tesseract_ready()
-        if ok:
-            lang = _resolve_lang(config.OCR_LANG, available)
-            return build_ocr(folder, pdf_path, lang)
-        # OCR requested but unavailable -> max quality lossless
-        return build_lossless(folder, pdf_path), False
+        if not ok:
+            raise RuntimeError(
+                "Searchable PDF requested, but Tesseract/pytesseract is unavailable. "
+                "Install tesseract-ocr, tesseract-ocr-eng, tesseract-ocr-hin and pytesseract."
+            )
+        requested = [lang for lang in config.OCR_LANG.split("+") if lang]
+        missing = [lang for lang in requested if lang not in available]
+        if missing:
+            raise RuntimeError(
+                "OCR languages missing: " + ", ".join(missing)
+                + ". Install the corresponding Tesseract language packs."
+            )
+        return build_ocr(folder, pdf_path, config.OCR_LANG)
     return build_lossless(folder, pdf_path), False
 
 
