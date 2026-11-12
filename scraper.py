@@ -24,6 +24,36 @@ _login_at: float = 0.0
 _auth_generation = 0
 _last_login_result: dict = {"state": "not_attempted"}
 
+# Shared across all single-book and category jobs in this Python process.
+# A single global budget prevents concurrent jobs from multiplying upstream load.
+_page_slots = asyncio.Semaphore(config.MAX_WORKERS)
+_rate_limit_until = 0.0
+_rate_limit_lock = asyncio.Lock()
+
+
+async def _wait_for_rate_limit():
+    """Respect a shared upstream cooldown without blocking the event loop."""
+    while True:
+        remaining = _rate_limit_until - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(remaining, 5.0))
+
+
+async def _record_rate_limit(response, attempt: int):
+    """Coordinate 429/503 backoff across jobs; cap untrusted Retry-After."""
+    global _rate_limit_until
+    retry_after = response.headers.get("retry-after", "").strip()
+    try:
+        delay = float(retry_after)
+    except ValueError:
+        delay = min(15 * attempt, 90)
+    delay = max(1.0, min(delay, 90.0))
+    async with _rate_limit_lock:
+        loop = asyncio.get_running_loop()
+        _rate_limit_until = max(_rate_limit_until, loop.time() + delay)
+
+
 
 async def get_client() -> httpx.AsyncClient:
     global _client
@@ -485,13 +515,16 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     generation = _auth_generation
     for attempt in range(1, config.PAGE_RETRY + 1):
         try:
-            resp = await c.get(url, headers={**config.HEADERS, **ref})
+            await _wait_for_rate_limit()
+            async with _page_slots:
+                await _wait_for_rate_limit()
+                resp = await c.get(url, headers={**config.HEADERS, **ref})
             if resp.status_code in (401, 403):
                 if await refresh_login(generation):
                     generation = _auth_generation
                     continue
             if resp.status_code in (429, 503):
-                await asyncio.sleep(min(15 * attempt, 90))
+                await _record_rate_limit(resp, attempt)
                 continue
             if resp.status_code != 200:
                 await asyncio.sleep(min(2 ** attempt, 20))
@@ -533,15 +566,13 @@ async def close_client():
 async def download_pages(book_id: int, pages: list[int], folder: str,
                          on_progress=None) -> tuple[int, int, list[int]]:
     """Download pages with bounded concurrency. Returns (ok, skip, failed_list)."""
-    sem = asyncio.Semaphore(config.MAX_WORKERS)
     ok = skip = 0
     failed: list[int] = []
     done = 0
 
     async def worker(p):
         nonlocal ok, skip, done
-        async with sem:
-            _, status = await download_page(book_id, p, folder)
+        _, status = await download_page(book_id, p, folder)
         if status == "ok":
             ok += 1
         elif status == "skipped":
@@ -552,5 +583,21 @@ async def download_pages(book_id: int, pages: list[int], folder: str,
         if on_progress:
             on_progress(done, len(pages), ok, skip, len(failed))
 
-    await asyncio.gather(*(worker(p) for p in pages))
+    # Bound task creation for large books rather than scheduling thousands at once.
+    queue = asyncio.Queue()
+    for p in pages:
+        queue.put_nowait(p)
+
+    async def consumer():
+        while True:
+            try:
+                p = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                await worker(p)
+            finally:
+                queue.task_done()
+
+    await asyncio.gather(*(consumer() for _ in range(min(config.MAX_WORKERS, len(pages)))))
     return ok, skip, sorted(failed)
