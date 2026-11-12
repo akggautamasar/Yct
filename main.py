@@ -723,6 +723,12 @@ def _safe_job(j: dict) -> dict:
     return safe
 
 
+@app.get("/api/performance")
+async def performance_metrics():
+    """Process-local downloader metrics (protected by existing site authentication)."""
+    return scraper.performance_snapshot()
+
+
 @app.get("/api/jobs")
 async def api_jobs():
     return [_safe_job(j) for j in jobs.all_jobs()]
