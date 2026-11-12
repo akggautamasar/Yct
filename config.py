@@ -25,6 +25,8 @@ REQ_DELAY   = float(os.environ.get("REQ_DELAY", "0.15"))
 TG_MAX_MB   = int(os.environ.get("TG_MAX_MB", "45"))    # Telegram bot upload cap ~50MB
 DO_OCR_DEFAULT = os.environ.get("DO_OCR", "false").lower() == "true"
 OCR_LANG    = os.environ.get("OCR_LANG", "hin+eng")
+# OCR processes are CPU-intensive; 1 is safest on a 2-vCPU VM, benchmark 2.
+OCR_WORKERS = max(1, min(2, int(os.environ.get("OCR_WORKERS", "1"))))
 # Process big books in page-batches so memory stays flat on the 512MB tier.
 # Each batch is downloaded, built into its own PDF, uploaded, then freed.
 CHUNK_PAGES = max(1, min(500, int(os.environ.get("CHUNK_PAGES", "40"))))
