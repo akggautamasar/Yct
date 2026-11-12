@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 import config
 import scraper
+import catalog
 import jobs
 import telegram as tg
 
@@ -233,12 +234,14 @@ async def shutdown():
             await distributed_task
         except asyncio.CancelledError:
             pass
+    await catalog.stop_scheduler()
     await scraper.close_client()
 
 
 @app.on_event("startup")
 async def startup():
     jobs.start_worker()
+    catalog.start_scheduler()
     # Keep the interactive server independent of optional distributed workers.
     # A worker requires an explicit opt-in so old dispatch credentials cannot
     # accidentally start background downloads on Koyeb's web instance.
@@ -362,61 +365,44 @@ async def _ensure_upstream_login():
 
 @app.get("/api/categories")
 async def api_categories(refresh: bool = False):
-    async def produce():
-        await _ensure_upstream_login()
-        categories = await scraper.get_categories()
-        return [{"id": key, "name": name} for key, name in sorted(categories.items())]
-    value = await _cached_api_value(("categories",), 0 if refresh else _CACHE_TTL["categories"],
-                                    produce, bypass=refresh)
-    return [dict(row) for row in value]
+    """Return Oracle's persistent catalogue; source is needed only on a cold cache."""
+    try:
+        return await catalog.ensure_categories(force=refresh)
+    except Exception as exc:
+        raise HTTPException(502, f"Catalogue unavailable: {exc}") from exc
 
 
 @app.get("/api/books")
 async def api_books(cat: int | None = None, refresh: bool = False, all: bool = False):
-    async def resolve_category(category_id: int):
-        async def produce():
-            await _ensure_upstream_login()
-            raw_books = await scraper.get_books_in_category(category_id)
-            semaphore = asyncio.Semaphore(4)
+    """Serve indexed books directly from SQLite, never rescrape on normal visits.
 
-            async def resolve(book):
-                async with semaphore:
-                    name, book_id = await scraper.get_book_details(book["detail_id"])
-                if not book_id:
-                    return None
-                return {"detail_id": book["detail_id"], "book_id": book_id,
-                        "name": name, "cover": book.get("cover", ""),
-                        "category_id": category_id}
-            rows = await asyncio.gather(*(resolve(book) for book in raw_books), return_exceptions=True)
-            resolved = [row for row in rows if isinstance(row, dict)]
-            if not resolved:
-                import logging
-                logging.getLogger(__name__).error(
-                    "YCT category %s: %s detail links but zero reader IDs; errors=%s",
-                    category_id, len(raw_books),
-                    [str(row)[:200] for row in rows if isinstance(row, BaseException)][:5],
-                )
-                raise HTTPException(502, "YCT returned book links but no readable book IDs; source layout or access may have changed")
-            return resolved
-        value = await _cached_api_value(("books", int(category_id)), 0 if refresh else _CACHE_TTL["books"],
-                                        produce, bypass=refresh)
-        return [dict(row) for row in value]
-
-    await _ensure_upstream_login()
+    refresh is kept for backwards compatibility with older browser clients;
+    /api/catalog/sync is the explicit incremental refresh operation.
+    """
     if all or cat is None:
-        categories = await _cached_api_value(
-            ("category_map",), 0 if refresh else _CACHE_TTL["categories"],
-            lambda: scraper.get_categories(), bypass=refresh
-        )
-        merged = []
-        seen = set()
-        for category_id in sorted(categories):
-            for book in await resolve_category(int(category_id)):
-                if book["book_id"] not in seen:
-                    seen.add(book["book_id"])
-                    merged.append(book)
-        return merged
-    return await resolve_category(int(cat))
+        return catalog.books()
+    if cat <= 0:
+        raise HTTPException(400, "Invalid category ID")
+    try:
+        return await catalog.ensure_books(cat)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not index category {cat}: {exc}") from exc
+
+
+@app.get("/api/catalog/status")
+async def api_catalog_status():
+    return catalog.status()
+
+
+class CatalogSyncReq(BaseModel):
+    cat: int | None = None
+
+
+@app.post("/api/catalog/sync")
+async def api_catalog_sync(req: CatalogSyncReq):
+    if req.cat is not None and req.cat <= 0:
+        raise HTTPException(400, "Invalid category ID")
+    return catalog.start_sync(req.cat)
 
 
 @app.get("/api/pages")
