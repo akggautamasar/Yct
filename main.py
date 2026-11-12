@@ -604,6 +604,7 @@ class CategoryArchiveReq(BaseModel):
     max_books: int = 1000
     resume_book: int = 1
     resume_page: int = 1
+    do_ocr: bool = False
 
 
 @app.post("/api/category-download")
@@ -635,7 +636,7 @@ async def api_category_download(req: CategoryArchiveReq):
         raise HTTPException(400, "No valid books were provided")
     if req.resume_book < 1 or req.resume_book > len(books) or req.resume_page < 1:
         raise HTTPException(400, "Invalid resume book/page")
-    batch_id = jobs.start_category_archive(req.category_name[:120], books, req.resume_book, req.resume_page)
+    batch_id = jobs.start_category_archive(req.category_name[:120], books, req.resume_book, req.resume_page, req.do_ocr)
     return {"job_id": batch_id, "total_books": len(books), "destination": "Telegram"}
 
 
