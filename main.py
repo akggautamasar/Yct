@@ -407,9 +407,15 @@ async def api_catalog_sync(req: CatalogSyncReq):
 
 @app.get("/api/pages")
 async def api_pages(book_id: int, refresh: bool = False):
+    if not refresh:
+        saved_pages = catalog.cached_page_count(book_id)
+        if saved_pages:
+            return {"book_id": book_id, "total_pages": saved_pages}
     async def produce():
         await _ensure_upstream_login()
         total = await scraper.get_total_pages(book_id)
+        if isinstance(total, int) and 0 < total <= 10000:
+            await asyncio.to_thread(catalog.remember_page_count, book_id, total)
         return {"book_id": book_id, "total_pages": total}
     cache_key = ("pages", int(book_id))
     value = await _cached_api_value(cache_key, 0 if refresh else _CACHE_TTL["pages"],
