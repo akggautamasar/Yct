@@ -94,7 +94,7 @@ def _existing_ids(category_id):
 def books(category_id=None):
     with _connect() as db:
         query = ("SELECT b.category_id,b.detail_id,b.book_id,b.name,b.cover,b.is_new,"
-                 "c.name AS category_name FROM books b JOIN categories c "
+                 "b.first_seen,c.name AS category_name FROM books b JOIN categories c "
                  "ON c.id=b.category_id")
         args = ()
         if category_id is not None:
@@ -107,6 +107,9 @@ def books(category_id=None):
         for row in rows:
             distinct.setdefault(row["book_id"], row)
         rows = list(distinct.values())
+    cutoff = int(time.time()) - 30 * 86400
+    for row in rows:
+        row["is_new"] = bool(row["is_new"] and row.pop("first_seen") >= cutoff)
     return rows
 
 
@@ -158,7 +161,8 @@ def status():
         ).fetchone()
         total_books = db.execute("SELECT COUNT(DISTINCT book_id) FROM books").fetchone()[0]
         new_books = db.execute(
-            "SELECT COUNT(DISTINCT book_id) FROM books WHERE is_new=1"
+            "SELECT COUNT(DISTINCT book_id) FROM books WHERE is_new=1 AND first_seen>=?",
+            (int(time.time()) - 30 * 86400,)
         ).fetchone()[0]
     return {
         **_state,
@@ -236,6 +240,7 @@ async def _run_sync(category_id):
         if not await scraper.ensure_login():
             raise RuntimeError("YCT authentication is unavailable")
         if category_id is None:
+            await asyncio.to_thread(_set_meta, "last_full_attempt", int(time.time()))
             await ensure_categories(force=True)
             targets = categories()
         else:
@@ -283,7 +288,8 @@ async def _periodic_sync():
     await asyncio.sleep(20)  # Never delay startup/health checks
     while True:
         try:
-            last = int(_get_meta("last_full_sync") or 0)
+            # Partial errors must not trigger a costly full rescan every hour.
+            last = int(_get_meta("last_full_attempt") or 0)
             if time.time() - last >= REFRESH_HOURS * 3600:
                 start_sync()
                 if _sync_task is not None:
