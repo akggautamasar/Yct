@@ -897,7 +897,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
       </div>
       <div class="catalog-search">
         <input id="bookSearch" type="search" placeholder="Search books by title or ID…" aria-label="Search books" autocomplete="off"/>
-        <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Fetch latest catalogue">↻</button>
+        <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Check selected category for new books">↻</button>
       </div>
       <label class="library-new-toggle"><input type="checkbox" id="newOnly"> Only newly added books</label>
       <div class="category-download-tools">
@@ -2204,13 +2204,13 @@ async function pollLibrary() {
     catalogPolling = setTimeout(pollLibrary, delay);
   }
 }
-async function startLibrarySync() {
+async function startLibrarySync(categoryId = null) {
   $('#syncLibrary').disabled = true;
-  $('#libSyncStatus').textContent = 'Starting background scan…';
+  $('#libSyncStatus').textContent = categoryId ? 'Checking selected category…' : 'Starting background scan…';
   try {
     await api('/api/catalog/sync', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({cat:null})
+      body:JSON.stringify({cat:categoryId})
     });
     catalogWasRunning = true;
     clearTimeout(catalogPolling);
@@ -2220,8 +2220,11 @@ async function startLibrarySync() {
     $('#syncLibrary').disabled = false;
   }
 }
-$('#syncLibrary').addEventListener('click', startLibrarySync);
-$('#refreshCatalog').addEventListener('click', startLibrarySync);
+$('#syncLibrary').addEventListener('click', () => startLibrarySync(null));
+$('#refreshCatalog').addEventListener('click', () => {
+  const selected = $('#cat').value;
+  startLibrarySync(selected === 'all' || !selected ? null : Number(selected));
+});
 pollLibrary();
 </script>
 </body>
