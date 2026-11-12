@@ -7,6 +7,7 @@ import re
 import base64
 import json
 import asyncio
+import time
 import httpx
 from bs4 import BeautifulSoup
 
@@ -23,6 +24,29 @@ _login_at: float = 0.0
 # into a single re-login instead of six parallel POSTs to YCT.
 _auth_generation = 0
 _last_login_result: dict = {"state": "not_attempted"}
+# Process-lifetime aggregate counters; no book titles, credentials or URLs.
+_perf = {"pages_ok": 0, "pages_skipped": 0, "pages_failed": 0,
+         "rate_limits": 0, "network_seconds": 0.0, "bytes": 0}
+_perf_started = time.monotonic()
+
+
+def performance_snapshot() -> dict:
+    """Read-only process counters for authenticated diagnostics."""
+    elapsed = max(0.001, time.monotonic() - _perf_started)
+    return {
+        **_perf,
+        "uptime_seconds": round(elapsed, 2),
+        "successful_pages_per_second": round(_perf["pages_ok"] / elapsed, 3),
+        "average_network_seconds_per_page": round(
+            _perf["network_seconds"] / _perf["pages_ok"], 3
+        ) if _perf["pages_ok"] else None,
+        "average_page_kib": round(
+            _perf["bytes"] / _perf["pages_ok"] / 1024, 1
+        ) if _perf["pages_ok"] else None,
+        "configured_workers": config.MAX_WORKERS,
+    }
+
+
 
 # Shared across all single-book and category jobs in this Python process.
 # A single global budget prevents concurrent jobs from multiplying upstream load.
@@ -43,6 +67,7 @@ async def _wait_for_rate_limit():
 async def _record_rate_limit(response, attempt: int):
     """Coordinate 429/503 backoff across jobs; cap untrusted Retry-After."""
     global _rate_limit_until
+    _perf["rate_limits"] += 1
     retry_after = response.headers.get("retry-after", "").strip()
     try:
         delay = float(retry_after)
@@ -506,6 +531,7 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     png = os.path.join(folder, f"page_{page:04d}.png")
     jpg = os.path.join(folder, f"page_{page:04d}.jpg")
     if os.path.exists(png) or os.path.exists(jpg):
+        _perf["pages_skipped"] += 1
         return page, "skipped"
 
     c = await get_client()
@@ -513,6 +539,7 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
     ref = {"Referer": f"{config.BASE_URL}/readbook/{book_id}/{page}"}
 
     generation = _auth_generation
+    started = time.monotonic()
     for attempt in range(1, config.PAGE_RETRY + 1):
         try:
             await _wait_for_rate_limit()
@@ -545,11 +572,15 @@ async def download_page(book_id: int, page: int, folder: str) -> tuple[int, str]
                 with open(tmp, "wb") as f:
                     f.write(data)
                 os.replace(tmp, out)     # atomic: a retry never sees half a page
+                _perf["pages_ok"] += 1
+                _perf["bytes"] += len(data)
+                _perf["network_seconds"] += time.monotonic() - started
                 await asyncio.sleep(max(0, config.REQ_DELAY))
                 return page, "ok"
             await asyncio.sleep(min(2 ** attempt, 10))
         except Exception:
             await asyncio.sleep(min(2 ** attempt, 15))
+    _perf["pages_failed"] += 1
     return page, "failed"
 
 
