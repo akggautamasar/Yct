@@ -117,35 +117,62 @@ def _resolve_lang(requested: str, available: list[str]) -> str:
     return "eng" if "eng" in available else (available[0] if available else requested)
 
 
-def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
-    """Build a complete searchable PDF or fail explicitly, never omit pages."""
+def _ocr_one_page(fp: str, lang: str) -> bytes:
+    """Run one Tesseract subprocess, keeping page decoding isolated."""
     import pytesseract
+    with Image.open(fp) as source:
+        img = source.convert("RGB")
+        result = pytesseract.image_to_pdf_or_hocr(img, lang=lang, extension="pdf")
+    if not result:
+        raise RuntimeError("Tesseract returned an empty PDF")
+    return result
+
+
+def build_ocr(folder: str, pdf_path: str, lang: str) -> tuple[float, bool]:
+    """Bounded parallel OCR; preserve page order and fail on missing pages.
+
+    At most OCR_WORKERS pages are being processed at once. Results are
+    consumed in original order, and no page can silently disappear.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from io import BytesIO
 
     imgs = _ordered_images(folder)
     if not imgs:
         raise RuntimeError("OCR requested but no page images were found")
 
+    workers = min(config.OCR_WORKERS, len(imgs))
     writer = PdfWriter()
     try:
-        for index, filename in enumerate(imgs, 1):
-            fp = os.path.join(folder, filename)
-            try:
-                with Image.open(fp) as source:
-                    img = source.convert("RGB")
-                    pdf_bytes = pytesseract.image_to_pdf_or_hocr(
-                        img, lang=lang, extension="pdf"
-                    )
-                if not pdf_bytes:
-                    raise RuntimeError("Tesseract returned an empty PDF")
-                from io import BytesIO
-                page_reader = PdfReader(BytesIO(pdf_bytes))
-                if len(page_reader.pages) != 1:
-                    raise RuntimeError("Tesseract did not return exactly one page")
-                writer.add_page(page_reader.pages[0])
-            except Exception as exc:
-                raise RuntimeError(
-                    f"OCR failed on page {index}/{len(imgs)} ({filename}): {exc}"
-                ) from exc
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="yct-ocr") as pool:
+            pending = {}
+            next_to_submit = 0
+
+            def submit_next():
+                nonlocal next_to_submit
+                if next_to_submit < len(imgs):
+                    index = next_to_submit
+                    path = os.path.join(folder, imgs[index])
+                    pending[index] = pool.submit(_ocr_one_page, path, lang)
+                    next_to_submit += 1
+
+            for _ in range(workers):
+                submit_next()
+
+            for index, filename in enumerate(imgs):
+                try:
+                    pdf_bytes = pending.pop(index).result()
+                    page_reader = PdfReader(BytesIO(pdf_bytes))
+                    if len(page_reader.pages) != 1:
+                        raise RuntimeError("Tesseract did not return exactly one page")
+                    writer.add_page(page_reader.pages[0])
+                except Exception as exc:
+                    for future in pending.values():
+                        future.cancel()
+                    raise RuntimeError(
+                        f"OCR failed on page {index + 1}/{len(imgs)} ({filename}): {exc}"
+                    ) from exc
+                submit_next()
 
         tmp_path = pdf_path + ".ocr.part"
         try:
