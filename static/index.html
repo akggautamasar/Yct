@@ -843,6 +843,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .library-new-toggle {display:flex;align-items:center;gap:6px;padding:2px 16px 0;font-size:11px;font-weight:700;color:var(--txt2)}
 .library-new-toggle input {width:15px;height:15px}
 .library-new-tag {display:inline-flex;align-items:center;background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);border-radius:5px;font-size:9px;font-weight:800;letter-spacing:.06em;padding:2px 6px;margin-bottom:5px}
+.library-show-more {grid-column:1/-1;margin:4px auto 12px;min-height:44px;width:min(100%,260px)}
 .book-item {border-radius:14px}
 .book-item:hover {transform:translateY(-3px)}
 .book-item.sel {transform:translateY(-2px)}
@@ -1199,6 +1200,8 @@ let categoryData = [];
 let activeBooks = [];
 let activeBookCategory = null;
 let bookLoadRequest = 0;
+let visibleBookLimit = 96;
+let previousBookFilter = "";
 
 function readLocalCache(key) {
   try {
@@ -1230,6 +1233,11 @@ function renderBooks(books, categoryId) {
       String(book.book_id).includes(query) ||
       (book.category_name || '').toLocaleLowerCase().includes(query))
   );
+  const filterKey = String(categoryId) + "|" + query + "|" + (newOnly ? "new" : "all");
+  if (filterKey !== previousBookFilter) {
+    visibleBookLimit = 96;
+    previousBookFilter = filterKey;
+  }
   const container = $('#books');
   if (!filtered.length) {
     container.innerHTML = '<div class="muted">' + (query || newOnly ? 'No books match your filters.' : 'No books saved yet. Tap Sync library.') + '</div>';
@@ -1237,7 +1245,7 @@ function renderBooks(books, categoryId) {
     return;
   }
   $('#bookCount').textContent = query ? filtered.length + ' / ' + activeBooks.length + ' books' : activeBooks.length + ' books';
-  container.innerHTML = filtered.map(book => {
+  container.innerHTML = filtered.slice(0, visibleBookLimit).map(book => {
     const cover = String(book.cover || '');
     const coverHtml = cover
       ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/>'
@@ -1250,6 +1258,17 @@ function renderBooks(books, categoryId) {
       '</div><div class="sub">ID: ' + Number(book.book_id) + '</div>' + categoryLabel + '</div></button>';
   }).join('');
   container.querySelectorAll('.book-item').forEach(el => { el.onclick = () => selectBook(el); });
+  if (filtered.length > visibleBookLimit) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'btn btn-ghost library-show-more';
+    more.textContent = 'Show more · ' + (filtered.length - visibleBookLimit).toLocaleString() + ' remaining';
+    more.addEventListener('click', () => {
+      visibleBookLimit += 96;
+      renderBooks(activeBooks, categoryId);
+    });
+    container.appendChild(more);
+  }
   container.querySelectorAll('.book-cover-img').forEach(img => {
     img.addEventListener('error', () => {
       const fallback = document.createElement('div');
