@@ -156,6 +156,8 @@ def _save_books(category_id, found):
             if cur.rowcount:
                 added += 1
         db.execute("UPDATE categories SET indexed_at=? WHERE id=?", (now, category_id))
+        db.execute("INSERT INTO catalog_meta(key,value) VALUES('revision','1') "
+                   "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1")
     return 0 if initial else added
 
 
@@ -192,6 +194,7 @@ def status():
         "indexed_categories": int(row["indexed"] or 0),
         "books": int(total_books),
         "new_books": int(new_books),
+        "revision": int(_get_meta("revision") or 0),
         "last_full_sync": int(_get_meta("last_full_sync") or 0),
         "auto_sync": AUTO_SYNC,
         "refresh_hours": REFRESH_HOURS,
