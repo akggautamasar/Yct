@@ -388,7 +388,7 @@ BATCH_JOBS: dict[str, dict] = {}
 _resource_lock = asyncio.Lock()
 
 
-def start_category_archive(category_name: str, books: list[dict], resume_book: int = 1, resume_page: int = 1) -> str:
+def start_category_archive(category_name: str, books: list[dict], resume_book: int = 1, resume_page: int = 1, do_ocr: bool = False) -> str:
     batch_id = uuid.uuid4().hex[:10]
     job = {
         "id": batch_id, "title": category_name or "All categories",
@@ -398,6 +398,7 @@ def start_category_archive(category_name: str, books: list[dict], resume_book: i
         "skipped_details": [], "failed_parts": 0, "error": None,
         "created_at": int(time.time()), "cancelled": False,
         "resume_book": resume_book, "resume_page": resume_page, "paused": False,
+        "do_ocr": bool(do_ocr),
     }
     _prune_category_jobs()
     BATCH_JOBS[batch_id] = job
@@ -634,7 +635,9 @@ async def _run_category_telegram_export(batch_id: str, books: list[dict]):
                         continue
 
                     job["status"] = f"building {index}/{len(books)} · pages {start}-{end}"
-                    size_mb, _ = await asyncio.to_thread(pdfbuilder.build, folder, pdf_path, False)
+                    size_mb, ocr_used = await asyncio.to_thread(pdfbuilder.build, folder, pdf_path, job["do_ocr"])
+                    if job["do_ocr"] and not ocr_used:
+                        job["status"] = f"OCR unavailable for {title}; generated standard PDF"
                     if size_mb <= 0 or not os.path.isfile(pdf_path):
                         job["failed_parts"] += 1
                         if len(job["skipped_details"]) < 30:
