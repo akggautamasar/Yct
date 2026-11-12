@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-<title>YCT Downloader</title>
+<title>AirYCT · Book Library & Downloader</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -823,6 +823,33 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 .book-item { width:100%; text-align:left; color:inherit; font:inherit; cursor:pointer; }
 .book-item:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 .book-list { content-visibility:auto; contain-intrinsic-size:800px; }
+
+/* Persistent-library browsing: responsive, accessible navy/teal surfaces */
+:root { --acc2:#6389ff; --acc2-bg:rgba(99,137,255,.12); --acc2-glow:rgba(99,137,255,.23); }
+[data-theme="light"] { --acc2:#2363ae; --acc2-bg:rgba(35,99,174,.1); --acc2-glow:rgba(35,99,174,.18); }
+.library-hero {flex-shrink:0;margin:12px 12px 0;padding:14px;border:1px solid var(--border2);border-radius:18px;background:linear-gradient(132deg,var(--acc-bg),var(--card) 65%,var(--acc2-bg));box-shadow:var(--shadow-sm)}
+.library-topline {display:flex;align-items:center;justify-content:space-between;gap:8px}
+.library-label {display:flex;align-items:center;gap:8px;font-weight:800;color:var(--txt);letter-spacing:.035em}
+.library-mark {width:31px;height:31px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;font-size:17px}
+.library-local-tag {color:var(--ok);font-size:10px;font-weight:800;border:1px solid var(--ok);background:var(--ok-bg);padding:4px 7px;border-radius:999px;white-space:nowrap}
+.library-caption {font-size:11.5px;color:var(--txt2);margin:7px 0 11px}
+.library-metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.library-metric {min-width:0;padding:10px 7px;border:1px solid var(--border);border-radius:11px;background:var(--surface-solid);text-align:center}
+.library-metric b {display:block;color:var(--txt);font-size:19px;font-variant-numeric:tabular-nums;line-height:1.25}
+.library-metric small {color:var(--txt3);font-size:10px;letter-spacing:.02em}
+.library-actions {display:flex;align-items:center;gap:9px;margin-top:10px}
+.library-actions .btn {flex-shrink:0;padding:9px 13px;font-size:12px;border-radius:10px}
+.library-sync-status {flex:1;min-width:0;color:var(--txt2);font-size:11px;line-height:1.35;overflow:hidden;text-overflow:ellipsis}
+.library-new-toggle {display:flex;align-items:center;gap:6px;padding:2px 16px 0;font-size:11px;font-weight:700;color:var(--txt2)}
+.library-new-toggle input {width:15px;height:15px}
+.library-new-tag {display:inline-flex;align-items:center;background:var(--ok-bg);border:1px solid var(--ok);color:var(--ok);border-radius:5px;font-size:9px;font-weight:800;letter-spacing:.06em;padding:2px 6px;margin-bottom:5px}
+.book-item {border-radius:14px}
+.book-item:hover {transform:translateY(-3px)}
+.book-item.sel {transform:translateY(-2px)}
+[data-theme="light"] .sidebar {background:rgba(249,252,255,.9)}
+[data-theme="light"] .library-hero {background:linear-gradient(125deg,#eaf9fc,#fff 68%,#eef4ff)}
+@media(max-width:768px) {.library-hero {margin:9px 10px 0;padding:11px}.library-caption{margin:5px 0 9px}.library-metric{padding:7px 5px}.library-metric b{font-size:17px}.cat-bar{padding:10px 12px}.catalog-search{padding:8px 12px 4px}.book-list{gap:11px;padding:8px 12px 16px;grid-template-columns:repeat(2,minmax(0,1fr))}.book-item:hover{transform:none}}
+@media(max-width:350px) {.library-local-tag{font-size:9px}.library-actions{flex-wrap:wrap}.book-list{gap:8px}}
 </style>
 </head>
 <body>
@@ -835,7 +862,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
 <div class="app">
   <header>
     <span class="logo">&#128218;</span>
-    <h1>YCT Downloader</h1>
+    <h1>AirYCT Library</h1>
 
     <!-- THEME TOGGLE BUTTON -->
     <button class="theme-toggle" id="themeToggle" aria-label="Toggle Theme">
@@ -847,6 +874,22 @@ input[type=checkbox]:checked { transform: scale(1.1); }
   </header>
   <div class="body">
     <aside class="sidebar">
+      <section class="library-hero" aria-label="Saved book library">
+        <div class="library-topline">
+          <div class="library-label"><span class="library-mark" aria-hidden="true">✦</span> Book library</div>
+          <span class="library-local-tag">● ORACLE CACHE</span>
+        </div>
+        <p class="library-caption">Instant browsing · refreshed independently of downloads</p>
+        <div class="library-metrics">
+          <div class="library-metric"><b id="libStatTotal">—</b><small>Books</small></div>
+          <div class="library-metric"><b id="libStatCategories">—</b><small>Categories</small></div>
+          <div class="library-metric"><b id="libStatNew">—</b><small>New arrivals</small></div>
+        </div>
+        <div class="library-actions">
+          <button class="btn btn-ghost" id="syncLibrary" type="button" title="Check categories for new books">↻ Sync library</button>
+          <span class="library-sync-status" id="libSyncStatus" role="status" aria-live="polite">Checking catalog…</span>
+        </div>
+      </section>
       <div class="cat-bar">
         <select id="cat"><option>Loading&#8230;</option></select>
         <button class="btn btn-ghost" id="loadBooks">Load</button>
@@ -855,6 +898,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
         <input id="bookSearch" type="search" placeholder="Search books by title or ID…" aria-label="Search books" autocomplete="off"/>
         <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Fetch latest catalogue">↻</button>
       </div>
+      <label class="library-new-toggle"><input type="checkbox" id="newOnly"> Only newly added books</label>
       <div class="category-download-tools">
         <label class="chk-label" style="margin:4px 0 6px;"><input type="checkbox" id="categoryOcr"> Searchable PDF (OCR) for category export</label>
         <button class="btn btn-primary" id="downloadCategory" type="button">↓ Send category to Telegram</button>
@@ -870,7 +914,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
         <span class="count" id="bookCount"></span>
       </div>
       <div class="book-list" id="books">
-        <div class="muted">Pick a category, then tap Load.</div>
+        <div class="muted">Saved books will appear here. Tap Sync library to build the catalog.</div>
       </div>
     </aside>
     <main class="main" id="mainPane">
@@ -878,7 +922,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
         <div class="main-empty" id="mainEmpty">
           <div class="icon">&#128218;</div>
           <h3>Select a book to get started</h3>
-          <p>Pick a category on the left, choose a book, then queue a download to Telegram or your browser.</p>
+          <p>Browse your saved library, choose a book, then download to Telegram or your device.</p>
         </div>
       </div>
     </main>
@@ -1179,13 +1223,16 @@ function renderBooks(books, categoryId) {
   activeBooks = Array.isArray(books) ? books : [];
   activeBookCategory = String(categoryId);
   const query = ($('#bookSearch')?.value || '').trim().toLocaleLowerCase();
-  const filtered = query
-    ? activeBooks.filter(book => (book.name || '').toLocaleLowerCase().includes(query) ||
-        String(book.book_id).includes(query) || (book.category_name || '').toLocaleLowerCase().includes(query))
-    : activeBooks;
+  const newOnly = Boolean($('#newOnly')?.checked);
+  const filtered = activeBooks.filter(book =>
+    (!newOnly || Boolean(book.is_new)) &&
+    (!query || (book.name || '').toLocaleLowerCase().includes(query) ||
+      String(book.book_id).includes(query) ||
+      (book.category_name || '').toLocaleLowerCase().includes(query))
+  );
   const container = $('#books');
   if (!filtered.length) {
-    container.innerHTML = '<div class="muted">' + (query ? 'No books match your search.' : 'No books found.') + '</div>';
+    container.innerHTML = '<div class="muted">' + (query || newOnly ? 'No books match your filters.' : 'No books saved yet. Tap Sync library.') + '</div>';
     $('#bookCount').textContent = '0 books';
     return;
   }
@@ -1195,10 +1242,11 @@ function renderBooks(books, categoryId) {
     const coverHtml = cover
       ? '<img src="' + safeText(cover) + '" class="book-cover-img" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"/>'
       : '<div class="book-icon-fallback">📚</div>';
+    const newLabel = book.is_new ? '<span class="library-new-tag">NEW ARRIVAL</span>' : '';
     const categoryLabel = book.category_name ? '<div class="sub">' + safeText(book.category_name) + '</div>' : '';
     return '<button type="button" class="book-item" data-id="' + Number(book.book_id) +
       '" data-name="' + encodeURIComponent(book.name || '') + '" data-cover="' + encodeURIComponent(cover) +
-      '">' + coverHtml + '<div class="info"><div class="name">' + safeText(book.name || ('Book ' + book.book_id)) +
+      '">' + coverHtml + '<div class="info">' + newLabel + '<div class="name">' + safeText(book.name || ('Book ' + book.book_id)) +
       '</div><div class="sub">ID: ' + Number(book.book_id) + '</div>' + categoryLabel + '</div></button>';
   }).join('');
   container.querySelectorAll('.book-item').forEach(el => { el.onclick = () => selectBook(el); });
@@ -1235,7 +1283,7 @@ async function refreshCats(showError, forceRefresh = false) {
     writeLocalCache('categories', categories);
     const previous = select.value;
     select.innerHTML = '<option value="all">All categories</option>' + categories.map(item => '<option value="' + Number(item.id) + '">' + safeText(item.name) + '</option>').join('');
-    if (categories.some(item => String(item.id) === previous)) select.value = previous;
+    if (previous === 'all' || categories.some(item => String(item.id) === previous)) select.value = previous;
     select.disabled = false;
     // Populate the first category on initial visit without requiring an extra click.
     if (!activeBookCategory && select.value) loadBooks(false);
@@ -2055,7 +2103,7 @@ loadCats();
 pollJobs();
 // "Reload" must actually reload: bypass both the browser-local copy and the
 // server-side 30-minute cache instead of replaying what is already cached.
-$('#loadBooks').onclick = () => loadBooks(true);
+$('#loadBooks').onclick = () => loadBooks(false);
 async function controlCategory(action) {
   if (!activeBatchId) return;
   if (action === 'cancel' && !confirm('Cancel this export? Files already uploaded to Telegram will remain.')) return;
@@ -2087,21 +2135,68 @@ try {
 $('#bookSearch').addEventListener('input', () => {
   if (activeBookCategory === String($('#cat').value)) renderBooks(activeBooks, activeBookCategory);
 });
-$('#refreshCatalog').addEventListener('click', async () => {
-  const button = $('#refreshCatalog');
-  button.disabled = true;
-  const previousCategory = $('#cat').value;
-  try {
-    await refreshCats(true, true);
-    // Keep the same category selected when it still exists.
-    if (previousCategory && [...$('#cat').options].some(option => option.value === previousCategory)) {
-      $('#cat').value = previousCategory;
-    }
-  } finally {
-    await loadBooks(true);
-    button.disabled = false;
-  }
+$('#newOnly').addEventListener('change', () => {
+  if (activeBookCategory !== null) renderBooks(activeBooks, activeBookCategory);
 });
+let catalogPolling = null;
+let catalogWasRunning = false;
+async function pollLibrary() {
+  let delay = 30000;
+  try {
+    const data = await api('/api/catalog/status');
+    $('#libStatTotal').textContent = Number(data.books || 0).toLocaleString();
+    $('#libStatCategories').textContent = String(data.indexed_categories || 0) + '/' + String(data.categories || 0);
+    $('#libStatNew').textContent = Number(data.new_books || 0).toLocaleString();
+    const running = Boolean(data.running);
+    $('#syncLibrary').disabled = running;
+    $('#refreshCatalog').disabled = running;
+    if (running) {
+      $('#libSyncStatus').textContent = (data.total ? data.processed + '/' + data.total : 'Connecting') + ' · ' + (data.current_category || data.phase || 'Syncing');
+      delay = 2500;
+    } else if (data.phase === 'error' || data.phase === 'partial') {
+      $('#libSyncStatus').textContent = 'Partial update · ' + (data.errors || []).length + ' issue(s)';
+    } else if (data.last_full_sync) {
+      $('#libSyncStatus').textContent = 'Updated ' + new Date(data.last_full_sync * 1000).toLocaleDateString();
+    } else {
+      $('#libSyncStatus').textContent = 'Tap Sync library to build the catalog';
+    }
+    if (catalogWasRunning && !running) {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(CATALOG_CACHE_PREFIX)) localStorage.removeItem(key);
+        }
+      } catch {}
+      await refreshCats(false);
+      await loadBooks(true);
+    }
+    catalogWasRunning = running;
+  } catch (error) {
+    $('#libSyncStatus').textContent = 'Catalog status unavailable';
+  } finally {
+    clearTimeout(catalogPolling);
+    catalogPolling = setTimeout(pollLibrary, delay);
+  }
+}
+async function startLibrarySync() {
+  $('#syncLibrary').disabled = true;
+  $('#libSyncStatus').textContent = 'Starting background scan…';
+  try {
+    await api('/api/catalog/sync', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cat:null})
+    });
+    catalogWasRunning = true;
+    clearTimeout(catalogPolling);
+    pollLibrary();
+  } catch (error) {
+    $('#libSyncStatus').textContent = 'Sync failed: ' + String(error.message || error).slice(0, 90);
+    $('#syncLibrary').disabled = false;
+  }
+}
+$('#syncLibrary').addEventListener('click', startLibrarySync);
+$('#refreshCatalog').addEventListener('click', startLibrarySync);
+pollLibrary();
 </script>
 </body>
 </html>
