@@ -856,6 +856,7 @@ input[type=checkbox]:checked { transform: scale(1.1); }
         <button class="btn btn-ghost" id="refreshCatalog" type="button" title="Fetch latest catalogue">↻</button>
       </div>
       <div class="category-download-tools">
+        <label class="chk-label" style="margin:4px 0 6px;"><input type="checkbox" id="categoryOcr"> Searchable PDF (OCR) for category export</label>
         <button class="btn btn-primary" id="downloadCategory" type="button">↓ Send category to Telegram</button>
         <div id="categoryJobControls" style="display:none;gap:8px;flex-wrap:wrap;margin:10px 0">
           <button class="btn btn-ghost" id="pauseCategory" type="button">⏸ Pause</button>
@@ -2008,8 +2009,9 @@ async function downloadSelectedCategory() {
   const category = categoryId === 'all'
     ? 'All categories'
     : ($('#cat').selectedOptions[0]?.textContent || 'Selected category');
+  const do_ocr = $('#categoryOcr').checked;
   if (!confirm('Send ' + books.length + ' books from "' + category +
-      '" to Telegram one book/page-part at a time? No large ZIP will be created on Render. ' +
+      '" to Telegram one book/page-part at a time? OCR: ' + (do_ocr ? 'ON' : 'OFF') + '. No large ZIP will be created on Render. ' +
       'A free Render restart can stop the current run, but files already uploaded remain in Telegram.')) return;
   const resumeText = prompt('Start from which book number? Enter 1 for a new export. For the interrupted RRB export, enter 92.', '1');
   if (resumeText === null) return;
@@ -2035,7 +2037,7 @@ async function downloadSelectedCategory() {
     const response = await fetch('/api/category-download', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({category_name: category, books, resume_book, resume_page})
+      body: JSON.stringify({category_name: category, books, resume_book, resume_page, do_ocr})
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || 'Could not start export');
