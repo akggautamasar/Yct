@@ -5,6 +5,7 @@ existing download/Telegram pipeline. Existing entries are never deleted
 because a remote category scan failed.
 """
 import asyncio
+from contextlib import closing
 import logging
 import os
 import sqlite3
@@ -34,7 +35,7 @@ def _connect():
 
 def _initialize():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute("PRAGMA journal_mode=WAL")
         db.executescript("""
             CREATE TABLE IF NOT EXISTS categories (
@@ -50,6 +51,7 @@ def _initialize():
                 cover TEXT NOT NULL DEFAULT '',
                 first_seen INTEGER NOT NULL,
                 is_new INTEGER NOT NULL DEFAULT 0,
+                total_pages INTEGER,
                 PRIMARY KEY (category_id, detail_id)
             );
             CREATE INDEX IF NOT EXISTS idx_books_reader ON books(book_id);
@@ -58,19 +60,23 @@ def _initialize():
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
         """)
+        # Safe migration for a catalog created by the first library release.
+        columns = {row[1] for row in db.execute("PRAGMA table_info(books)")}
+        if "total_pages" not in columns:
+            db.execute("ALTER TABLE books ADD COLUMN total_pages INTEGER")
 
 
 _initialize()
 
 
 def categories():
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         return [{"id": int(r["id"]), "name": r["name"]}
                 for r in db.execute("SELECT id,name FROM categories ORDER BY name COLLATE NOCASE")]
 
 
 def _upsert_categories(rows):
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.executemany(
             "INSERT INTO categories(id,name) VALUES(?,?) "
             "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
@@ -79,21 +85,21 @@ def _upsert_categories(rows):
 
 
 def _indexed(category_id):
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute("SELECT indexed_at FROM categories WHERE id=?", (category_id,)).fetchone()
         return bool(row and row["indexed_at"])
 
 
 def _existing_ids(category_id):
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         return {int(row[0]) for row in db.execute(
             "SELECT detail_id FROM books WHERE category_id=?", (category_id,)
         )}
 
 
 def books(category_id=None):
-    with _connect() as db:
-        query = ("SELECT b.category_id,b.detail_id,b.book_id,b.name,b.cover,b.is_new,"
+    with closing(_connect()) as db, db:
+        query = ("SELECT b.category_id,b.detail_id,b.book_id,b.name,b.cover,b.is_new,b.total_pages,"
                  "b.first_seen,c.name AS category_name FROM books b JOIN categories c "
                  "ON c.id=b.category_id")
         args = ()
@@ -113,10 +119,26 @@ def books(category_id=None):
     return rows
 
 
+def cached_page_count(book_id):
+    with closing(_connect()) as db, db:
+        row = db.execute(
+            "SELECT total_pages FROM books WHERE book_id=? AND total_pages>0 LIMIT 1",
+            (int(book_id),),
+        ).fetchone()
+        return int(row[0]) if row else None
+
+
+def remember_page_count(book_id, pages):
+    if not isinstance(pages, int) or pages <= 0 or pages > 10000:
+        return
+    with closing(_connect()) as db, db:
+        db.execute("UPDATE books SET total_pages=? WHERE book_id=?", (pages, int(book_id)))
+
+
 def _save_books(category_id, found):
     """Insert only new books; first index isn't advertised as an update."""
     now = int(time.time())
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute(
             "SELECT indexed_at FROM categories WHERE id=?", (category_id,)
         ).fetchone()
@@ -138,13 +160,13 @@ def _save_books(category_id, found):
 
 
 def _get_meta(key):
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute("SELECT value FROM catalog_meta WHERE key=?", (key,)).fetchone()
         return row["value"] if row else None
 
 
 def _set_meta(key, value):
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute(
             "INSERT INTO catalog_meta(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -153,7 +175,7 @@ def _set_meta(key, value):
 
 
 def status():
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute(
             "SELECT COUNT(*) AS categories,"
             "SUM(CASE WHEN indexed_at>0 THEN 1 ELSE 0 END) AS indexed "
