@@ -305,6 +305,7 @@ def start_sync(category_id=None):
     global _sync_task
     if _sync_task is not None and not _sync_task.done():
         return status()
+    _state.update(running=True, phase="queued", processed=0, total=0, added=0, errors=[])
     _sync_task = asyncio.create_task(_run_sync(category_id))
     return status()
 
