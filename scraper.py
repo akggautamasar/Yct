@@ -171,7 +171,9 @@ async def ensure_login(max_age: float = 20 * 60) -> bool:
         age = asyncio.get_running_loop().time() - _login_at
         if age < max_age:
             return True
-    return await login()
+    # A stale in-memory success must never suppress a real re-handshake.
+    # login() without force short-circuits when _login_complete is True.
+    return await refresh_login(_auth_generation)
 
 
 def _is_img(b: bytes) -> bool:
@@ -266,7 +268,7 @@ async def get_book_details(detail_id: int) -> tuple[str, int | None]:
     return name, book_id
 
 
-async def get_total_pages(book_id: int) -> int | None:
+async def _probe_total_pages(book_id: int) -> int | None:
     c = await get_client()
     try:
         rb = await c.get(f"{config.BASE_URL}/readbook/{book_id}/1",
@@ -302,6 +304,21 @@ async def get_total_pages(book_id: int) -> int | None:
         return lo
     except Exception:
         return None
+
+
+async def get_total_pages(book_id: int) -> int | None:
+    """Recover once from an expired reader session, never cache a failed count."""
+    if not await ensure_login():
+        return None
+    generation = _auth_generation
+    total = await _probe_total_pages(book_id)
+    if total is not None:
+        return total
+    # Both reader HTML and page-image probing can fail silently on stale cookies.
+    # A single coalesced forced refresh is safer than a service restart.
+    if await refresh_login(generation):
+        return await _probe_total_pages(book_id)
+    return None
 
 
 async def _page_exists(book_id: int, page: int) -> bool:
@@ -498,7 +515,7 @@ async def fetch_page_bytes(book_id: int, page: int) -> tuple[bytes, str] | None:
                 or ("<form" in body[:6000].lower() and "password" in body[:6000].lower())
             )
             if needs_login:
-                if attempt == 0 and await login(force=True):
+                if attempt == 0 and await refresh_login(_auth_generation):
                     continue
                 log.warning("YCT preview rejected: book=%s page=%s status=%s", book_id, page, response.status_code)
                 return None
